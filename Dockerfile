@@ -46,18 +46,14 @@ COPY ui/ /ui/
 RUN npm run build
 
 
-# =========================================================
-# gatebox runtime
-# =========================================================
+# ---- gatebox runtime ----
 FROM base AS gatebox
+WORKDIR /app
+
 COPY --from=deps /usr/local /usr/local
 
-# backend
-COPY app /work/app
-
-# NEW: ui build output -> в контейнер
-# В app/main.py монтируй StaticFiles(directory="/work/app/static") на "/"
-COPY --from=ui_build /ui/dist /work/app/static
+# Кладём backend + UI туда, где FastAPI его ждёт
+COPY app /app/app
 
 EXPOSE 8080
 CMD ["python", "-m", "uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8080"]

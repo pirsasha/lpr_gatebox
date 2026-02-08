@@ -393,7 +393,9 @@ def _require_store() -> SettingsStore:
     if _settings_store is None:
         _settings_store = SettingsStore(path="/config/settings.json", defaults=_DEFAULT_SETTINGS)
     return _settings_store
-
+    
+def get_settings_store() -> SettingsStore:
+    return _require_store()
 
 def _strip_nones(x: Any) -> Any:
     """PowerShell/клиенты легко присылают null/None — не даём им затирать настройки."""

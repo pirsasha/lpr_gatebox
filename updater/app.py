@@ -1,12 +1,14 @@
 # =========================================================
 # Файл: updater/app.py
 # Проект: LPR GateBox
-# Версия: v0.3.2
+# Версия: v0.3.2-fix1
 # Изменено: 2026-02-08
 # Что сделано:
-# - FIX: единый compose project name, чтобы не было конфликта портов (8080)
-# - CHG: docker-compose -> docker compose (Compose v2)
-# - NEW: COMPOSE_PROJECT_NAME / UPDATE_FALLBACK_BUILD
+# - FIX: updater больше НЕ "ломает UI" — обновление безопасное (pull -> recreate -> health-wait)
+# - FIX: updater НЕ пересоздаёт сам себя (обновляет только gatebox/rtsp_worker)
+# - FIX: COMPOSE_FILE приводится к абсолютному пути (исключаем "no configuration file provided")
+# - CHG: restart теперь с --force-recreate --remove-orphans
+# - NEW: HEALTH_URL / HEALTH_TIMEOUT_SEC (ожидание готовности gatebox после обновления)
 # - KEEP: /status /log /report /metrics
 # =========================================================
 
@@ -18,6 +20,8 @@ import time
 import os
 import zipfile
 from pathlib import Path
+from urllib.request import urlopen
+from urllib.error import URLError
 
 PORT = int(os.environ.get("UPDATER_PORT", "9010"))
 
@@ -26,18 +30,28 @@ STATE = {
     "step": None,
     "last_result": None,
     "last_check": None,
+    "last_error": None,
 }
 LOG = []
 
-PROJECT_DIR = os.environ.get("PROJECT_DIR", "/project")
-COMPOSE_FILE = os.environ.get("COMPOSE_FILE", "docker-compose.yml")
-CONFIG_DIR = os.environ.get("CONFIG_DIR", "/config")
+PROJECT_DIR = os.environ.get("PROJECT_DIR", "/project").strip() or "/project"
+COMPOSE_FILE = os.environ.get("COMPOSE_FILE", "docker-compose.yml").strip() or "docker-compose.yml"
+CONFIG_DIR = os.environ.get("CONFIG_DIR", "/config").strip() or "/config"
 
 # IMPORTANT: чтобы updater управлял ТЕМ ЖЕ стеком, что и пользователь
 COMPOSE_PROJECT_NAME = os.environ.get("COMPOSE_PROJECT_NAME", "lpr_gatebox").strip() or "lpr_gatebox"
 
 # 0 = не билдим в проде (рекомендовано)
 FALLBACK_BUILD = os.environ.get("UPDATE_FALLBACK_BUILD", "0") == "1"
+
+# NEW: health wait после обновления
+HEALTH_URL = os.environ.get("HEALTH_URL", "http://gatebox:8080/api/v1/health").strip() or "http://gatebox:8080/api/v1/health"
+HEALTH_TIMEOUT_SEC = float(os.environ.get("HEALTH_TIMEOUT_SEC", "45") or "45")
+
+# NEW: какие сервисы обновлять командой `up` (updater НЕ трогаем)
+UPDATE_SERVICES = [s.strip() for s in os.environ.get("UPDATE_SERVICES", "gatebox,rtsp_worker").split(",") if s.strip()]
+if not UPDATE_SERVICES:
+    UPDATE_SERVICES = ["gatebox", "rtsp_worker"]
 
 
 def log(msg: str):
@@ -47,6 +61,18 @@ def log(msg: str):
     LOG.append(line)
     if len(LOG) > 700:
         LOG.pop(0)
+
+
+def _abs_compose_path() -> str:
+    """
+    FIX: COMPOSE_FILE -> абсолютный путь.
+    Если уже абсолютный — оставляем.
+    Если относительный — считаем относительно PROJECT_DIR.
+    """
+    p = Path(COMPOSE_FILE)
+    if p.is_absolute():
+        return str(p)
+    return str(Path(PROJECT_DIR) / p)
 
 
 def run(cmd, cwd=PROJECT_DIR):
@@ -69,8 +95,39 @@ def compose_cmd(*args: str):
     """
     Always use Compose v2: `docker compose`
     And force same project name via -p
+    FIX: используем абсолютный путь compose-файла
     """
-    return ["docker", "compose", "-p", COMPOSE_PROJECT_NAME, "-f", COMPOSE_FILE, *args]
+    compose_path = _abs_compose_path()
+    return ["docker", "compose", "-p", COMPOSE_PROJECT_NAME, "-f", compose_path, *args]
+
+
+def wait_health(timeout_sec: float) -> bool:
+    """
+    NEW: ждём, пока gatebox снова станет доступен после пересоздания.
+    """
+    t0 = time.time()
+    last_err = None
+
+    while (time.time() - t0) < timeout_sec:
+        try:
+            with urlopen(HEALTH_URL, timeout=3) as r:
+                if r.status == 200:
+                    body = r.read().decode("utf-8", "ignore").strip()
+                    # достаточно ok=true или просто 200
+                    if '"ok"' in body:
+                        return True
+                    # даже если endpoint возвращает что-то ещё — 200 считаем успехом
+                    return True
+        except URLError as e:
+            last_err = str(e)
+        except Exception as e:
+            last_err = str(e)
+
+        time.sleep(1.0)
+
+    if last_err:
+        log(f"health wait timeout; last_err={last_err}")
+    return False
 
 
 def do_update():
@@ -78,7 +135,9 @@ def do_update():
         return
 
     STATE["running"] = True
+    STATE["last_error"] = None
     try:
+        # 1) pull (не трогаем сервисы, пока pull не успешен)
         STATE["step"] = "pull"
         rc1 = run(compose_cmd("pull"))
         if rc1 != 0:
@@ -91,15 +150,26 @@ def do_update():
             else:
                 raise RuntimeError(f"pull failed rc={rc1}")
 
+        # 2) up -d с принудительным пересозданием и зачисткой orphan'ов
+        # FIX: updater НЕ обновляем здесь, чтобы не "самоубиться"
         STATE["step"] = "restart"
-        rc2 = run(compose_cmd("up", "-d"))
+        up_args = ["up", "-d", "--force-recreate", "--remove-orphans", *UPDATE_SERVICES]
+        rc2 = run(compose_cmd(*up_args))
         if rc2 != 0:
             raise RuntimeError(f"up failed rc={rc2}")
 
+        # 3) дождаться health
+        STATE["step"] = "health"
+        if not wait_health(timeout_sec=HEALTH_TIMEOUT_SEC):
+            raise RuntimeError("health timeout: gatebox did not become ready")
+
         STATE["last_result"] = "ok"
+        log("UPDATE OK")
     except Exception as e:
-        log(f"ERROR: {e}")
+        err = str(e)
+        log(f"ERROR: {err}")
         STATE["last_result"] = "error"
+        STATE["last_error"] = err
     finally:
         STATE["running"] = False
         STATE["step"] = None
@@ -236,6 +306,10 @@ def get_metrics():
         "disk_project": _disk_usage_mb(PROJECT_DIR if PROJECT_DIR else "/"),
         "disk_config": _disk_usage_mb(CONFIG_DIR if CONFIG_DIR else "/"),
         "kernel": _read_first_line("/proc/version"),
+        "compose_project": COMPOSE_PROJECT_NAME,
+        "compose_file": _abs_compose_path(),
+        "update_services": UPDATE_SERVICES,
+        "health_url": HEALTH_URL,
     }
 
     try:
@@ -300,5 +374,8 @@ class Handler(BaseHTTPRequestHandler):
         self._json(404, {"error": "not found"})
 
 
-log(f"updater starting on :{PORT} project={PROJECT_DIR} compose={COMPOSE_FILE} project_name={COMPOSE_PROJECT_NAME} fallback_build={FALLBACK_BUILD}")
+log(
+    "updater starting on :%s project=%s compose=%s project_name=%s fallback_build=%s health_url=%s services=%s"
+    % (PORT, PROJECT_DIR, _abs_compose_path(), COMPOSE_PROJECT_NAME, FALLBACK_BUILD, HEALTH_URL, ",".join(UPDATE_SERVICES))
+)
 HTTPServer(("", PORT), Handler).serve_forever()

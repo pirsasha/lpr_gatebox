@@ -1,14 +1,15 @@
 // ui/src/pages/System.jsx
 // LPR_GATEBOX UI
 // Версия: v0.3.2
-// Обновлено: 2026-02-07
+// Обновлено: 2026-02-08
 //
 // Что сделано:
-// - NEW: UI управления updater (status/check/start/report/log)
-// - NEW: карточка "Ресурсы" (CPU/RAM/DISK + docker stats) из /api/v1/system/metrics
+// - NEW: блок Telegram в "Система" (token/enabled/paired/test)
+// - KEEP: UI управления updater (status/check/start/report/log)
+// - KEEP: карточка "Ресурсы" (CPU/RAM/DISK + docker stats) из /api/v1/system/metrics
 
 import React, { useEffect, useMemo, useState } from "react";
-import { apiGet, apiPost, apiDownload } from "../api"; // <-- поправь путь под твой проект (у тебя api.js в src)
+import { apiGet, apiPost, apiDownload, getSettings, putSettings } from "../api"; // <-- api.js в src
 
 function fmtMB(x) {
   if (x == null || Number.isNaN(x)) return "—";
@@ -49,6 +50,13 @@ export default function SystemPage() {
 
   const [err, setErr] = useState("");
 
+  // Telegram (config/settings)
+  const [tgSettings, setTgSettings] = useState(null);
+  const [tgDirty, setTgDirty] = useState(false);
+  const [tgInfo, setTgInfo] = useState("");
+  const [tgErr, setTgErr] = useState("");
+  const [tgBusy, setTgBusy] = useState(false);
+
   async function loadHealth() {
     const h = await apiGet("/api/v1/health");
     setHealth(h);
@@ -69,11 +77,66 @@ export default function SystemPage() {
     setUpdLog(Array.isArray(l?.log) ? l.log : []);
   }
 
+  async function loadTelegramSettings() {
+    const r = await getSettings();
+    setTgSettings(r?.settings || {});
+  }
+
+  function patchTelegram(path, value) {
+    setTgSettings((prev) => {
+      const next = JSON.parse(JSON.stringify(prev || {}));
+      const parts = String(path || "").split(".");
+      let cur = next;
+      for (let i = 0; i < parts.length - 1; i++) {
+        const k = parts[i];
+        if (cur[k] == null || typeof cur[k] !== "object") cur[k] = {};
+        cur = cur[k];
+      }
+      cur[parts[parts.length - 1]] = value;
+      return next;
+    });
+    setTgDirty(true);
+  }
+
+  async function saveTelegramSettings() {
+    try {
+      setTgErr("");
+      setTgInfo("");
+      setTgBusy(true);
+      const r = await putSettings(tgSettings || {});
+      setTgSettings(r?.settings || tgSettings);
+      setTgDirty(false);
+      setTgInfo("Сохранено. Если менял token — нажми «Обновить сейчас» (перезапустит gatebox).");
+    } catch (e) {
+      setTgErr(String(e?.message || e));
+    } finally {
+      setTgBusy(false);
+    }
+  }
+
+  async function telegramTest() {
+    try {
+      setTgErr("");
+      setTgInfo("");
+      setTgBusy(true);
+      const withPhoto = !!(tgSettings?.telegram?.send_photo ?? true);
+      const r = await apiPost("/api/v1/telegram/test", {
+        text: "✅ GateBox: тест Telegram (из UI / Система)",
+        with_photo: withPhoto,
+      });
+      if (r?.ok) setTgInfo("Отправлено ✅ Проверь Telegram-чат.");
+      else setTgErr(r?.error || "Не удалось отправить тест");
+    } catch (e) {
+      setTgErr(String(e?.message || e));
+    } finally {
+      setTgBusy(false);
+    }
+  }
+
   async function loadAll() {
     try {
       setErr("");
-      await Promise.all([loadHealth(), loadMetrics(), loadUpdaterStatus()]);
-      // лог можно реже, но пусть тоже подгружается
+      await Promise.all([loadHealth(), loadMetrics(), loadUpdaterStatus(), loadTelegramSettings()]);
       await loadUpdaterLog();
     } catch (e) {
       setErr(String(e?.message || e));
@@ -83,7 +146,6 @@ export default function SystemPage() {
   useEffect(() => {
     loadAll();
     const t = setInterval(() => {
-      // Метрики/статус обновляем раз в 5с — достаточно и не грузит систему
       loadAll();
     }, 5000);
     return () => clearInterval(t);
@@ -215,7 +277,11 @@ export default function SystemPage() {
               <span className="badge badge-gray">
                 step: <span className="mono">{updStep}</span>
               </span>
-              <span className={`badge ${updLast === "ok" ? "badge-green" : updLast === "error" ? "badge-red" : "badge-gray"}`}>
+              <span
+                className={`badge ${
+                  updLast === "ok" ? "badge-green" : updLast === "error" ? "badge-red" : "badge-gray"
+                }`}
+              >
                 last: <span className="mono">{updLast}</span>
               </span>
             </div>
@@ -234,7 +300,9 @@ export default function SystemPage() {
 
             <div className="lastBlock" style={{ marginTop: 12 }}>
               <div className="row" style={{ justifyContent: "space-between" }}>
-                <div className="cardTitle" style={{ fontSize: 14 }}>Логи updater (tail)</div>
+                <div className="cardTitle" style={{ fontSize: 14 }}>
+                  Логи updater (tail)
+                </div>
                 <div className="row">
                   <button className="btn btn-ghost" type="button" onClick={onRefreshLog}>
                     Обновить логи
@@ -260,7 +328,98 @@ export default function SystemPage() {
             </div>
 
             <div className="hint">
-              “Обновить сейчас” сделает docker-compose pull + up -d. Во время обновления UI может кратко моргнуть — это нормально.
+              “Обновить сейчас” сделает docker-compose pull + up -d. Во время обновления UI может кратко моргнуть — это
+              нормально.
+            </div>
+          </div>
+        </div>
+      </div>
+
+      {/* TELEGRAM */}
+      <div className="card">
+        <div className="cardHead">
+          <div className="cardTitle">Telegram</div>
+          <div className="row">
+            <span className={`badge ${tgSettings?.telegram?.enabled ? "badge-green" : "badge-gray"}`}>
+              {tgSettings?.telegram?.enabled ? "enabled" : "disabled"}
+            </span>
+            <span className={`badge ${tgSettings?.telegram?.chat_id ? "badge-green" : "badge-red"}`}>
+              {tgSettings?.telegram?.chat_id ? "paired" : "not paired"}
+            </span>
+          </div>
+        </div>
+
+        <div className="cardBody">
+          <div className="kvGrid">
+            <KeyVal k="bot_token" v={tgSettings?.telegram?.bot_token ? "••••••••••••" : "—"} mono />
+            <KeyVal k="chat_id" v={tgSettings?.telegram?.chat_id || "—"} mono />
+            <KeyVal k="send_photo" v={String(!!(tgSettings?.telegram?.send_photo ?? true))} mono />
+          </div>
+
+          <div className="lastBlock" style={{ marginTop: 12 }}>
+            <div className="row" style={{ gap: 10, flexWrap: "wrap" }}>
+              <label className="row" style={{ gap: 8 }}>
+                <input
+                  type="checkbox"
+                  checked={!!tgSettings?.telegram?.enabled}
+                  onChange={(e) => patchTelegram("telegram.enabled", e.target.checked)}
+                />
+                <span>Уведомления Telegram</span>
+              </label>
+
+              <label className="row" style={{ gap: 8 }}>
+                <input
+                  type="checkbox"
+                  checked={!!(tgSettings?.telegram?.send_photo ?? true)}
+                  onChange={(e) => patchTelegram("telegram.send_photo", e.target.checked)}
+                />
+                <span>Присылать фото</span>
+              </label>
+            </div>
+
+            <div style={{ marginTop: 12 }}>
+              <div className="muted" style={{ marginBottom: 6 }}>
+                Token бота (клиент может создать своего бота через BotFather)
+              </div>
+              <input
+                className="input"
+                type="password"
+                value={tgSettings?.telegram?.bot_token || ""}
+                placeholder="123456:ABCDEF..."
+                onChange={(e) => patchTelegram("telegram.bot_token", e.target.value)}
+              />
+              <div className="hint" style={{ marginTop: 8 }}>
+                1) Вставь token → Сохранить. 2) Открой бота и нажми <span className="mono">/start</span>. 3) Нажми
+                “Отправить тест”.
+              </div>
+            </div>
+
+            {tgErr ? (
+              <div className="alert alert-error" style={{ marginTop: 12 }}>
+                <div style={{ fontWeight: 800, marginBottom: 6 }}>Ошибка</div>
+                <div className="mono">{tgErr}</div>
+              </div>
+            ) : null}
+            {tgInfo ? (
+              <div className="alert" style={{ marginTop: 12 }}>
+                <div style={{ fontWeight: 800, marginBottom: 6 }}>OK</div>
+                <div>{tgInfo}</div>
+              </div>
+            ) : null}
+
+            <div className="row" style={{ marginTop: 12, gap: 10, flexWrap: "wrap" }}>
+              <button className="btn btn-primary" type="button" onClick={saveTelegramSettings} disabled={!tgDirty || tgBusy}>
+                Сохранить
+              </button>
+              <button className="btn btn-ghost" type="button" onClick={() => patchTelegram("telegram.chat_id", null)} disabled={tgBusy}>
+                Сбросить привязку
+              </button>
+              <button className="btn btn-primary" type="button" onClick={telegramTest} disabled={tgBusy}>
+                Отправить тест
+              </button>
+              <button className="btn btn-ghost" type="button" onClick={loadTelegramSettings} disabled={tgBusy}>
+                Обновить
+              </button>
             </div>
           </div>
         </div>
@@ -338,28 +497,40 @@ export default function SystemPage() {
                 </div>
                 <div className="cardBody">
                   <div className="table">
-                    <div className="thead" style={{ gridTemplateColumns: "160px 120px 1fr" }}>
+                    <div className="tr th">
                       <div>name</div>
                       <div>cpu</div>
                       <div>mem</div>
                     </div>
 
-                    {[cWorker, cGatebox, cUpdater]
-                      .filter(Boolean)
-                      .map((c) => (
-                        <div key={c.name} className="trow" style={{ gridTemplateColumns: "160px 120px 1fr" }}>
-                          <div className="mono">{c.name}</div>
-                          <div className={`mono ${c.name === "rtsp_worker" ? "" : "muted"}`}>
-                            {c.cpu_pct ? `${c.cpu_pct}%` : "—"}
-                          </div>
-                          <div className="mono muted">{c.raw_mem || c.mem_used || "—"}</div>
+                    {Array.isArray(containers) && containers.length ? (
+                      containers.map((c, idx) => (
+                        <div className="tr" key={idx}>
+                          <div className="mono">{c?.name || "—"}</div>
+                          <div className="mono">{c?.cpu_pct || "—"}</div>
+                          <div className="mono">{c?.raw_mem || "—"}</div>
                         </div>
-                      ))}
+                      ))
+                    ) : (
+                      <div className="muted">Нет данных</div>
+                    )}
+                  </div>
 
-                    <div className="hint" style={{ marginTop: 10 }}>
-                      Если rtsp_worker стабильно &gt;100% CPU — это нормально (YOLO + декод), но можно снижать DET_FPS/READ_FPS
-                      или уменьшать imgsz.
-                    </div>
+                  <div className="hint" style={{ marginTop: 10 }}>
+                    Если rtsp_worker стабильно &gt;100% CPU — это нормально (YOLO + декод), но можно снижать DET_FPS/READ_FPS
+                    или уменьшать imgsz.
+                  </div>
+
+                  <div className="footer">
+                    <span className="badge badge-gray">
+                      gatebox cpu: <span className="mono">{cGatebox?.cpu_pct || "—"}</span>
+                    </span>
+                    <span className="badge badge-gray">
+                      worker cpu: <span className="mono">{cWorker?.cpu_pct || "—"}</span>
+                    </span>
+                    <span className="badge badge-gray">
+                      updater cpu: <span className="mono">{cUpdater?.cpu_pct || "—"}</span>
+                    </span>
                   </div>
                 </div>
               </div>

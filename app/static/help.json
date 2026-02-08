@@ -1,0 +1,38 @@
+{
+  "community": {
+    "title": "Сообщество / Telegram",
+    "description": "Вопросы, настройка, баги, примеры камер и реальные кейсы пользователей.",
+    "buttonText": "Перейти в чат поддержки",
+    "url": "https://t.me/+9Xh2UQs0eTxkNDky"
+  },
+
+  "media": {
+    "title": "Видео и инструкции",
+    "channel": {
+      "label": "YouTube-канал",
+      "url": "https://youtube.com/@lprgatebox"
+    },
+    "guides": [
+      { "title": "Первый запуск", "url": "https://example.com/guide/first-start" },
+      { "title": "Настройка камеры", "url": "https://example.com/guide/camera" },
+      { "title": "ROI", "url": "https://example.com/guide/roi" },
+      { "title": "MQTT", "url": "https://example.com/guide/mqtt" }
+    ]
+  },
+
+  "donate": {
+    "title": "Поддержать проект",
+    "description": "Поддержка помогает развивать проект, добавлять новые функции и поддерживать стабильность.",
+    "methods": [
+      { "id": "card", "label": "Карта", "value": "4276 5203 0572 6669" },
+      { "id": "yoomoney", "label": "ЮMoney", "value": "41001655955715" },
+      { "id": "boosty", "label": "Boosty", "url": "https://boosty.to/pirogov/single-payment/donation/778746/target?share=target_link" },
+      { "id": "usdt", "label": "USDT (TRC20)", "value": "TU6h4ycD2cALZVTYidQxqigux5ce1swJv6" }
+    ],
+    "qr": { "enabled": false, "image": "/assets/donate_qr.png" }
+  },
+
+  "tips": {
+    "support": "При обращении в поддержку желательно приложить: _frame_vis.jpg, _rectify.jpg и описание камеры (модель, разрешение, codec)."
+  }
+}

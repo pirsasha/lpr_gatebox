@@ -1,40 +1,83 @@
 name: lpr_gatebox
+
 services:
   gatebox:
-    image: ghcr.io/pirsasha/lpr_gatebox-gatebox:v0.3.1
+    image: ghcr.io/pirsasha/lpr_gatebox-gatebox:stable
     restart: unless-stopped
     ports:
       - "8080:8080"
     environment:
-      APP_VERSION: "v0.3.1"
+      APP_VERSION: "stable"
       MODEL_PATH: "/models/plate_ocr.onnx"
       SETTINGS_PATH: "/config/settings.json"
+
+      MQTT_ENABLED: "1"
+      MQTT_HOST: "m4.wqtt.ru"
+      MQTT_PORT: "8854"
+      MQTT_USER: "u_46O0EH"
+      MQTT_PASS: "oZYjCpHv"
+      MQTT_TOPIC: "gate/open"
       # ...
+
     volumes:
       - ./models:/models:ro
       - ./config:/config
 
+    # FIX: чтобы апдейтер/система понимали "готово/не готово"
+    # (не используем wget/curl — только python, он точно есть в образе gatebox)
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - |
+          python - <<'PY'
+          import json, urllib.request, sys
+          try:
+              data = urllib.request.urlopen("http://127.0.0.1:8080/api/v1/health", timeout=3).read()
+              j = json.loads(data.decode("utf-8","ignore"))
+              sys.exit(0 if j.get("ok") is True else 1)
+          except Exception:
+              sys.exit(1)
+          PY
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 30s
+
   rtsp_worker:
-    image: ghcr.io/pirsasha/lpr_gatebox-rtsp-worker:v0.3.1
+    image: ghcr.io/pirsasha/lpr_gatebox-rtsp-worker:stable
     restart: unless-stopped
-    depends_on: [gatebox]
+
+    # FIX: стартовать только когда gatebox реально поднялся
+    depends_on:
+      gatebox:
+        condition: service_healthy
+
     environment:
+      DET_MODEL_PATH: "/models/license-plate-finetune-v1s.pt"
+      RTSP_URL: "rtsp://192.168.2.102:8554/vorota"
       INFER_URL: "http://gatebox:8080/infer"
       # ...
+
     volumes:
       - ./models:/models:ro
       - ./debug:/debug
       - ./config:/config
 
   updater:
-    image: ghcr.io/pirsasha/lpr_gatebox-updater:v0.3.1
+    image: ghcr.io/pirsasha/lpr_gatebox-updater:stable
     restart: unless-stopped
+    ports:
+      - "9010:9010"
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
       - .:/project
       - ./config:/config
     environment:
-       PROJECT_DIR: /project
-       COMPOSE_FILE: docker-compose.prod.yml
-       COMPOSE_PROJECT_NAME: lpr_gatebox
-       UPDATE_FALLBACK_BUILD: "0"
+      PROJECT_DIR: "/project"
+      # FIX: абсолютный путь, чтобы updater никогда не терял файл
+      COMPOSE_FILE: "/project/docker-compose.prod.yml"
+      COMPOSE_PROJECT_NAME: "lpr_gatebox"
+      UPDATE_FALLBACK_BUILD: "0"
+      # (опционально, если ты в updater добавишь ожидание health)
+      HEALTH_URL: "http://gatebox:8080/api/v1/health"
+      HEALTH_TIMEOUT_SEC: "45"

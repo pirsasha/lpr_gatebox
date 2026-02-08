@@ -46,7 +46,13 @@ import paho.mqtt.client as mqtt
 
 from app.ocr_onnx import OnnxOcr
 from app.gate_logic import GateDecider, is_valid_ru_plate_strict, normalize_ru_plate, is_noise_ocr
-
+from fastapi.staticfiles import StaticFiles
+from fastapi.responses import FileResponse
+from app.integrations.telegram.client import TelegramClient
+from app.integrations.telegram.notifier import TelegramNotifier
+from app.integrations.telegram.poller import TelegramPoller
+from app.api.ui_api import get_settings_store
+from app.api.telegram_api import router as telegram_router, set_telegram_hooks
 # quad/warp (best-effort внутри gatebox)
 # ВАЖНО: это отдельный путь от твоего refiner-а в rtsp_worker.
 try:
@@ -126,6 +132,16 @@ DEFAULT_SETTINGS: Dict[str, Any] = {
     "ui": {
         "events_max": int(os.environ.get("EVENTS_MAX", "200")),
     },
+        "telegram": {
+        "enabled": False,
+        "chat_id": None,
+        "thread_id": None,
+        "send_photo": True,
+        "photo_kind": "frame",   # frame | plate (plate best-effort)
+        "include_conf": True,
+        "rate_limit_sec": 2.0,
+        "pair_code": None,       # если захочешь защиту: "1234"
+    },
 }
 
 
@@ -140,6 +156,7 @@ app.include_router(ui_router, prefix="/api")
 # v1 (новый стабильный контракт)
 app.include_router(ui_router, prefix="/api/v1")
 
+app.include_router(telegram_router)
 # =========================
 # CORE OBJECTS
 # =========================
@@ -317,7 +334,83 @@ try:
 except Exception:
     pass
 
+# =========================
+# TELEGRAM (optional)
+# =========================
+TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN", "").strip()
 
+_tg_notifier: TelegramNotifier | None = None
+_tg_poller: TelegramPoller | None = None
+
+def _tg_log(msg: str) -> None:
+    try:
+        print(msg, flush=True)
+    except Exception:
+        pass
+
+def _tg_get_cfg() -> Dict[str, Any]:
+    try:
+        return get_settings_store().get()
+    except Exception:
+        return {}
+
+def _tg_save_patch(patch: Dict[str, Any]) -> Dict[str, Any]:
+    return get_settings_store().update(patch)
+
+def _tg_pick_photo_path(cfg: Dict[str, Any]) -> str | None:
+    tg = cfg.get("telegram") if isinstance(cfg.get("telegram"), dict) else {}
+    tg = tg if isinstance(tg, dict) else {}
+    kind = str(tg.get("photo_kind") or "frame").strip().lower()
+
+    # 1) frame — всегда есть (rtsp_worker пишет live)
+    if kind == "frame":
+        p = "/config/live/frame.jpg"
+        return p if os.path.exists(p) else None
+
+    # 2) plate — best-effort из /debug (если воркер сохраняет)
+    if kind == "plate":
+        try:
+            import glob
+            cand = sorted(glob.glob("/debug/*_crop.jpg"), reverse=True)
+            if cand:
+                return cand[0]
+        except Exception:
+            pass
+
+    # fallback
+    p = "/config/live/frame.jpg"
+    return p if os.path.exists(p) else None
+def _tg_enqueue_text(text: str, photo_path: str | None):
+    # используем тот же notifier, что и для ok=True
+    if _tg_notifier is None:
+        return
+    # очередь использует TgTask(text, photo_path)
+    try:
+        from app.integrations.telegram.notifier import TgTask
+        _tg_notifier.q.put_nowait(TgTask(text=text, photo_path=photo_path))
+    except Exception:
+        pass
+
+set_telegram_hooks(_tg_get_cfg, _tg_enqueue_text, _tg_pick_photo_path)
+
+if TELEGRAM_BOT_TOKEN:
+    try:
+        tg_client = TelegramClient(TELEGRAM_BOT_TOKEN)
+        _tg_notifier = TelegramNotifier(tg_client, get_cfg=_tg_get_cfg, log=_tg_log)
+        _tg_notifier.start()
+
+        _tg_poller = TelegramPoller(
+            tg_client,
+            get_cfg=_tg_get_cfg,
+            save_patch=_tg_save_patch,
+            notifier=_tg_notifier,
+            log=_tg_log,
+        )
+        _tg_poller.start()
+    except Exception as e:
+        _tg_log(f"[tg] ERROR: init failed: {type(e).__name__}: {e}")
+else:
+    _tg_log("[tg] disabled (TELEGRAM_BOT_TOKEN not set)")
 # =========================
 # OCR helpers
 # =========================
@@ -651,7 +744,15 @@ async def infer(
     if decision.get("ok") and not noise:
         published = mqtt_publish(payload)
     payload["mqtt_published"] = bool(published)
-
+    # Telegram notify: только при ok и не мусор (не блокируем infer)
+    try:
+        if decision.get("ok") and not noise and _tg_notifier is not None:
+            _tg_notifier.set_last_ok(payload)
+            cfg = _tg_get_cfg()
+            photo_path = _tg_pick_photo_path(cfg)
+            _tg_notifier.enqueue_ok(payload, photo_path=photo_path)
+    except Exception:
+        pass
     # UI events (не ломаем infer)
     try:
         push_event_from_infer(payload)
@@ -666,3 +767,11 @@ async def infer(
             pass
 
     return payload
+# -------------------------
+# UI (static build)
+# -------------------------
+STATIC_DIR = os.environ.get("STATIC_DIR", "/app/app/static")
+INDEX_PATH = os.path.join(STATIC_DIR, "index.html")
+
+if os.path.exists(INDEX_PATH):
+    app.mount("/", StaticFiles(directory=STATIC_DIR, html=True), name="ui")

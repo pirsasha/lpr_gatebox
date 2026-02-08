@@ -75,7 +75,8 @@ services:
       MQTT_USER: "pirsasha"
       MQTT_PASS: "Ps!628227!"
       MQTT_TOPIC: "gate/open"
-
+      #BOT_TG
+      TELEGRAM_BOT_TOKEN: "8580546225:AAH2_pLVlzXM0YgLd8Dfg9GkzOid_Txg348"
     volumes:
       - ./models:/models:ro
       - ./config:/config
