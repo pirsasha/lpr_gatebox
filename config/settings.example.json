@@ -1,12 +1,11 @@
-{
-  "mqtt": {
-    "enabled": true,
-    "host": "192.168.2.102",
-    "port": 1883,
-    "user": "pirsasha",
-    "pass": "Ps!628227!",
-    "topic": "gate/open"
-  },
+"mqtt": {
+  "enabled": true,
+  "host": "192.168.2.102",
+  "port": 1883,
+  "user": "CHANGE_ME",
+  "pass": "CHANGE_ME",
+  "topic": "gate/open"
+},
   "gate": {
     "min_conf": 0.8,
     "confirm_n": 2,
