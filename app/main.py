@@ -1,0 +1,668 @@
+# =========================================================
+# Файл: app/main.py
+# Проект: LPR GateBox
+# Версия: v0.3.1
+# Изменено: 2026-02-06 20:30 (UTC+3)
+# Автор: Александр
+# Что сделано:
+# - CHG: "мусор" OCR (8980/9994/короткие обрывки) помечается как debug и скрывается из UI по умолчанию
+# - NEW: /infer принимает meta от rtsp_worker (pre_variant/pre_warped/pre_timing_ms)
+# - NEW: payload.meta (variant/warped/timing_ms) для диагностики, при этом confirm/hits остаётся стабильным
+# - CHG: логирование: по умолчанию печатаем только полезное; мусор — только при DEBUG_LOG=1
+# - CHG: дефолт OCR_WARP_W/H уменьшен (быстрее на CPU мини‑ПК)
+# =========================================================
+
+# ИЗМЕНЕНО v0.2.9:
+# - Реализован adaptive OCR (warp только при плохом OCR).
+# - В ответ /infer добавлены timing_ms и диагностические поля из GateDecider.
+
+"""FastAPI core for LPR GateBox.
+
+FILE: app/main.py
+VERSION: v0.2.9
+DATE: 2026-02-06
+
+CHG v0.2.9:
+- Adaptive OCR: сначала быстрый OCR без warp, затем (опционально) ориентации и warp
+  ТОЛЬКО если результат признан "плохим" по критериям (conf/valid/len).
+- В ответ /infer добавлены timing_ms — чтобы быстро локализовать задержку (decode/ocr/warp).
+
+Почему так:
+- warp/minAreaRect/quad — дорогие операции на CPU. На мини-ПК выгоднее сначала сделать
+  максимально быстрый прогон OCR, и только при явной проблеме подключать стабилизацию.
+"""
+
+from __future__ import annotations
+
+import os
+import json
+import time
+from typing import Any, Dict, Iterable, Tuple
+
+import cv2
+import numpy as np
+from fastapi import FastAPI, UploadFile, File, HTTPException, Form
+import paho.mqtt.client as mqtt
+
+from app.ocr_onnx import OnnxOcr
+from app.gate_logic import GateDecider, is_valid_ru_plate_strict, normalize_ru_plate, is_noise_ocr
+
+# quad/warp (best-effort внутри gatebox)
+# ВАЖНО: это отдельный путь от твоего refiner-а в rtsp_worker.
+try:
+    from app.core.plate_rectifier import rectify_plate_quad  # type: ignore
+except ModuleNotFoundError:
+    from core.plate_rectifier import rectify_plate_quad  # type: ignore
+
+# UI API
+from app.api import ui_api
+from app.api.ui_api import router as ui_router
+from app.api.ui_api import push_event_from_infer
+
+
+# =========================
+# ENV / DEFAULTS
+# =========================
+MODEL_PATH = os.environ.get("MODEL_PATH", "/models/plate_ocr.onnx")
+SETTINGS_PATH = os.environ.get("SETTINGS_PATH", "/config/settings.json")
+
+# MQTT defaults from env (используются при первом создании settings.json)
+ENV_MQTT_ENABLED = os.environ.get("MQTT_ENABLED", "1").strip().lower() in ("1", "true", "yes")
+ENV_MQTT_HOST = os.environ.get("MQTT_HOST", "192.168.1.10")
+ENV_MQTT_PORT = int(os.environ.get("MQTT_PORT", "1883"))
+ENV_MQTT_USER = os.environ.get("MQTT_USER", "")
+ENV_MQTT_PASS = os.environ.get("MQTT_PASS", "")
+ENV_MQTT_TOPIC = os.environ.get("MQTT_TOPIC", "gate/open")
+
+# Gate defaults from env
+ENV_MIN_CONF = float(os.environ.get("MIN_CONF", "0.80"))
+ENV_CONFIRM_N = int(os.environ.get("CONFIRM_N", "2"))
+# CHG v0.2.9: при низком FPS воркера (0.5-1.0) окно 2 секунды легко превращается в "вечное ожидание".
+# По умолчанию расширяем окно до 6 секунд (можно вернуть 2.0, если RTSP_FPS>=2).
+ENV_CONFIRM_WINDOW_SEC = float(os.environ.get("CONFIRM_WINDOW_SEC", "6.0"))
+ENV_COOLDOWN_SEC = float(os.environ.get("COOLDOWN_SEC", "15.0"))
+ENV_WHITELIST_PATH = os.environ.get("WHITELIST_PATH", "/config/whitelist.json")
+
+ENV_REGION_CHECK = os.environ.get("REGION_CHECK", "1").strip().lower() not in ("0", "false", "no", "off", "")
+ENV_REGION_STAB = os.environ.get("REGION_STAB", "1").strip().lower() not in ("0", "false", "no", "off", "")
+ENV_REGION_STAB_WINDOW_SEC = float(os.environ.get("REGION_STAB_WINDOW_SEC", "2.5"))
+ENV_REGION_STAB_MIN_HITS = int(os.environ.get("REGION_STAB_MIN_HITS", "3"))
+ENV_REGION_STAB_MIN_RATIO = float(os.environ.get("REGION_STAB_MIN_RATIO", "0.60"))
+
+# OCR orientation / warp toggles (для прямых запросов в gatebox)
+ENV_OCR_ORIENT_TRY = os.environ.get("OCR_ORIENT_TRY", "1").strip().lower() not in ("0", "false", "no", "off", "")
+ENV_OCR_WARP_TRY = os.environ.get("OCR_WARP_TRY", "1").strip().lower() not in ("0", "false", "no", "off", "")
+# CHG v0.2.9: меньший размер warp заметно экономит CPU на мини‑ПК.
+ENV_OCR_WARP_W = int(os.environ.get("OCR_WARP_W", "320"))
+ENV_OCR_WARP_H = int(os.environ.get("OCR_WARP_H", "96"))
+
+# NEW v0.2.9: критерии "плохого OCR" для adaptive pipeline
+ENV_OCR_BAD_MIN_LEN = int(os.environ.get("OCR_BAD_MIN_LEN", "6"))
+ENV_OCR_BAD_MIN_CONF = float(os.environ.get("OCR_BAD_MIN_CONF", "0.70"))
+# NEW: продуктовые флаги логирования
+DEBUG_LOG = os.environ.get("DEBUG_LOG", "0").strip().lower() in ("1", "true", "yes", "y", "on")
+PRINT_EVERY_RESPONSE = os.environ.get("PRINT_EVERY_RESPONSE", "0").strip().lower() in ("1", "true", "yes", "y", "on")
+DEFAULT_SETTINGS: Dict[str, Any] = {
+    "mqtt": {
+        "enabled": ENV_MQTT_ENABLED,
+        "host": ENV_MQTT_HOST,
+        "port": ENV_MQTT_PORT,
+        "user": ENV_MQTT_USER,
+        "pass": ENV_MQTT_PASS,
+        "topic": ENV_MQTT_TOPIC,
+    },
+    "gate": {
+        "min_conf": ENV_MIN_CONF,
+        "confirm_n": ENV_CONFIRM_N,
+        "confirm_window_sec": ENV_CONFIRM_WINDOW_SEC,
+        "cooldown_sec": ENV_COOLDOWN_SEC,
+        "whitelist_path": ENV_WHITELIST_PATH,
+        "region_check": ENV_REGION_CHECK,
+        "region_stab": ENV_REGION_STAB,
+        "region_stab_window_sec": ENV_REGION_STAB_WINDOW_SEC,
+        "region_stab_min_hits": ENV_REGION_STAB_MIN_HITS,
+        "region_stab_min_ratio": ENV_REGION_STAB_MIN_RATIO,
+    },
+    "ui": {
+        "events_max": int(os.environ.get("EVENTS_MAX", "200")),
+    },
+}
+
+
+# =========================
+# APP
+# =========================
+app = FastAPI(title="LPR GateBox Core")
+
+# legacy (старый UI не ломаем)
+app.include_router(ui_router, prefix="/api")
+
+# v1 (новый стабильный контракт)
+app.include_router(ui_router, prefix="/api/v1")
+
+# =========================
+# CORE OBJECTS
+# =========================
+ocr = OnnxOcr(MODEL_PATH)
+decider = GateDecider()
+
+from app.api.ui_api import set_whitelist_reload_callback
+set_whitelist_reload_callback(decider.reload_whitelist)
+# =========================
+# MQTT (runtime config)
+# =========================
+_mqtt: mqtt.Client | None = None
+_mqtt_cfg: Dict[str, Any] = {
+    "enabled": ENV_MQTT_ENABLED,
+    "host": ENV_MQTT_HOST,
+    "port": ENV_MQTT_PORT,
+    "user": ENV_MQTT_USER,
+    "pass": ENV_MQTT_PASS,
+    "topic": ENV_MQTT_TOPIC,
+}
+
+
+def _mqtt_disconnect() -> None:
+    """Отключаемся от MQTT аккуратно, без исключений."""
+    global _mqtt
+    if _mqtt is None:
+        return
+    try:
+        # FIX: останавливаем loop, иначе возможны фоновые ошибки/потоки
+        _mqtt.loop_stop()
+    except Exception:
+        pass
+    try:
+        _mqtt.disconnect()
+    except Exception:
+        pass
+    _mqtt = None
+
+
+def mqtt_client() -> mqtt.Client:
+    """Lazy MQTT client. Переподключается после apply_settings(), если конфиг менялся."""
+    global _mqtt
+    if _mqtt is not None:
+        return _mqtt
+
+    c = mqtt.Client()
+    if _mqtt_cfg.get("user"):
+        c.username_pw_set(str(_mqtt_cfg.get("user")), str(_mqtt_cfg.get("pass") or ""))
+
+    c.connect(str(_mqtt_cfg.get("host")), int(_mqtt_cfg.get("port")), 60)
+
+    # FIX: запускаем сетевой цикл, чтобы соединение было устойчивым в долгую
+    try:
+        c.loop_start()
+    except Exception:
+        # Если loop_start не стартанул — не валим приложение, просто будем пытаться publish как есть
+        pass
+
+    _mqtt = c
+    return _mqtt
+
+
+def mqtt_publish(payload: Dict[str, Any]) -> bool:
+    """MQTT publish не должен валить /infer."""
+    if not bool(_mqtt_cfg.get("enabled")):
+        return False
+    try:
+        c = mqtt_client()
+        topic = str(_mqtt_cfg.get("topic") or "gate/open")
+        c.publish(topic, json.dumps(payload, ensure_ascii=False))
+        return True
+    except Exception:
+        _mqtt_disconnect()
+        return False
+
+
+# =========================
+# SETTINGS APPLY (callback)
+# =========================
+def apply_settings(settings: Dict[str, Any]) -> Dict[str, Any]:
+    """Применить настройки в рантайме. Возвращает что применили (для UI).
+
+    ВАЖНО:
+    - mqtt.pass не возвращаем в UI в открытом виде (маскируем).
+    - пустой mqtt.pass из UI не затирает сохранённый пароль.
+    """
+    applied: Dict[str, Any] = {}
+
+    # --- GATE ---
+    gate = settings.get("gate") if isinstance(settings.get("gate"), dict) else {}
+    if isinstance(gate, dict):
+        if "min_conf" in gate:
+            decider.min_conf = float(gate.get("min_conf"))
+        if "confirm_n" in gate:
+            decider.confirm_n = int(gate.get("confirm_n"))
+        if "confirm_window_sec" in gate:
+            decider.window_sec = float(gate.get("confirm_window_sec"))
+        if "cooldown_sec" in gate:
+            decider.cooldown_sec = float(gate.get("cooldown_sec"))
+
+        if "whitelist_path" in gate:
+            new_path = str(gate.get("whitelist_path") or "/config/whitelist.json")
+            if new_path != getattr(decider, "whitelist_path", ""):
+                decider.whitelist_path = new_path
+                decider.reload_whitelist()
+
+        if "region_check" in gate:
+            decider.region_check = bool(gate.get("region_check"))
+        if "region_stab" in gate:
+            decider.region_stab = bool(gate.get("region_stab"))
+        if "region_stab_window_sec" in gate:
+            decider.region_stab_window_sec = float(gate.get("region_stab_window_sec"))
+        if "region_stab_min_hits" in gate:
+            decider.region_stab_min_hits = int(gate.get("region_stab_min_hits"))
+        if "region_stab_min_ratio" in gate:
+            decider.region_stab_min_ratio = float(gate.get("region_stab_min_ratio"))
+
+        applied["gate"] = {
+            "min_conf": decider.min_conf,
+            "confirm_n": decider.confirm_n,
+            "confirm_window_sec": decider.window_sec,
+            "cooldown_sec": decider.cooldown_sec,
+            "whitelist_path": decider.whitelist_path,
+            "region_check": decider.region_check,
+            "region_stab": decider.region_stab,
+            "region_stab_window_sec": decider.region_stab_window_sec,
+            "region_stab_min_hits": decider.region_stab_min_hits,
+            "region_stab_min_ratio": decider.region_stab_min_ratio,
+        }
+
+    # --- MQTT ---
+    mqtt_s = settings.get("mqtt") if isinstance(settings.get("mqtt"), dict) else {}
+    if isinstance(mqtt_s, dict):
+        # CHG: пустой pass не должен затирать существующий
+        incoming_pass = mqtt_s.get("pass", None)
+        if isinstance(incoming_pass, str) and incoming_pass.strip() == "":
+            incoming_pass = None
+
+        new_cfg = {
+            "enabled": bool(mqtt_s.get("enabled", True)),
+            "host": str(mqtt_s.get("host") or ""),
+            "port": int(mqtt_s.get("port") or 1883),
+            "user": str(mqtt_s.get("user") or ""),
+            "pass": _mqtt_cfg.get("pass") if incoming_pass is None else str(incoming_pass),
+            "topic": str(mqtt_s.get("topic") or "gate/open"),
+        }
+
+        changed = new_cfg != _mqtt_cfg
+        if changed:
+            _mqtt_disconnect()
+            _mqtt_cfg.update(new_cfg)
+
+        applied["mqtt"] = {
+            "enabled": _mqtt_cfg.get("enabled"),
+            "host": _mqtt_cfg.get("host"),
+            "port": _mqtt_cfg.get("port"),
+            "user": _mqtt_cfg.get("user"),
+            "pass": "***" if (_mqtt_cfg.get("pass") or "") else "",
+            "topic": _mqtt_cfg.get("topic"),
+            "reconnected": changed,
+        }
+
+    return applied
+
+
+# =========================
+# INIT SETTINGS STORE + APPLY
+# =========================
+ui_api.init_settings(SETTINGS_PATH, DEFAULT_SETTINGS)
+ui_api.set_apply_callback(apply_settings)
+
+# применяем настройки при старте (best-effort)
+try:
+    apply_settings(ui_api._require_store().get())  # type: ignore[attr-defined]
+except Exception:
+    pass
+
+
+# =========================
+# OCR helpers
+# =========================
+def _iter_orientation_candidates(img_bgr: np.ndarray) -> Iterable[Tuple[str, np.ndarray]]:
+    """Кандидаты ориентации для OCR:
+    - всегда 0° и 180°
+    - 90°/270° только если кадр вертикальный (h > w)
+    """
+    yield "rot0", img_bgr
+    yield "rot180", cv2.rotate(img_bgr, cv2.ROTATE_180)
+    if img_bgr.shape[0] > img_bgr.shape[1]:
+        yield "rot90", cv2.rotate(img_bgr, cv2.ROTATE_90_CLOCKWISE)
+        yield "rot270", cv2.rotate(img_bgr, cv2.ROTATE_90_COUNTERCLOCKWISE)
+
+
+def _is_bad_ocr(plate_norm: str, conf: float, valid: bool) -> bool:
+    """Критерии "плохого OCR" для решения, надо ли запускать тяжёлые ветки (orient/warp).
+
+    Логика deliberately простая и воспроизводимая:
+    - invalid РФ формат -> плохой
+    - conf ниже порога -> плохой
+    - слишком короткая строка -> плохой
+    """
+    if not plate_norm:
+        return True
+    if len(plate_norm) < int(ENV_OCR_BAD_MIN_LEN):
+        return True
+    if not bool(valid):
+        return True
+    if float(conf) < float(ENV_OCR_BAD_MIN_CONF):
+        return True
+    return False
+
+
+def _ocr_try_best(img_bgr: np.ndarray) -> Dict[str, Any]:
+    """Адаптивный OCR для CPU-only.
+
+    Принцип:
+    1) Быстрый baseline: OCR на исходном кадре (rot0)
+    2) Если baseline "плохой" -> пробуем ориентации (если включено)
+    3) Если всё ещё "плохо" -> пробуем warp (тяжёлый шаг)
+
+    Важно: warp делаем ТОЛЬКО если реально нужно.
+    """
+    t_total0 = time.time()
+    timing_ms: Dict[str, float] = {"ocr": 0.0, "orient": 0.0, "warp": 0.0}
+
+    def score_for(plate_norm: str, conf: float, valid: bool) -> float:
+        # бонус валидности небольшой, но помогает отбрасывать мусор
+        return float(conf) + (0.15 if bool(valid) else 0.0)
+
+    # держим текущий "лучший" кадр-кандидат, чтобы warp делать именно на нём
+    best_img: np.ndarray = img_bgr
+
+    best: Dict[str, Any] = {
+        "raw": "",
+        "plate_norm": "",
+        "conf": 0.0,
+        "variant": "rot0",
+        "warped": False,
+        "score": -1.0,
+        "timing_ms": timing_ms,
+    }
+
+    # --- 1) baseline (самый быстрый) ---
+    t0 = time.time()
+    raw0, conf0 = ocr.infer_bgr(img_bgr)
+    timing_ms["ocr"] += (time.time() - t0) * 1000.0
+
+    plate0 = normalize_ru_plate(raw0)
+    valid0 = is_valid_ru_plate_strict(plate0, region_check=decider.region_check)
+    best.update(
+        {
+            "raw": str(raw0),
+            "plate_norm": str(plate0),
+            "conf": float(conf0),
+            "variant": "rot0",
+            "warped": False,
+            "score": score_for(plate0, conf0, valid0),
+        }
+    )
+
+    # если baseline хороший — сразу выходим (минимальная задержка)
+    if not _is_bad_ocr(plate0, float(conf0), bool(valid0)):
+        best["timing_ms"]["total"] = (time.time() - t_total0) * 1000.0
+        best.pop("score", None)
+        return best
+
+    # --- 2) ориентации (средняя цена) ---
+    if ENV_OCR_ORIENT_TRY:
+        t_or0 = time.time()
+        for label, cand in _iter_orientation_candidates(img_bgr):
+            if label == "rot0":
+                continue
+            t1 = time.time()
+            raw, conf = ocr.infer_bgr(cand)
+            timing_ms["ocr"] += (time.time() - t1) * 1000.0
+            plate_norm = normalize_ru_plate(raw)
+            valid = is_valid_ru_plate_strict(plate_norm, region_check=decider.region_check)
+            sc = score_for(plate_norm, conf, valid)
+            if sc > float(best["score"]):
+                best.update(
+                    {
+                        "raw": str(raw),
+                        "plate_norm": str(plate_norm),
+                        "conf": float(conf),
+                        "variant": label,
+                        "warped": False,
+                        "score": sc,
+                    }
+                )
+                best_img = cand
+
+            # ранний выход: нашли хороший вариант
+            bp = str(best.get("plate_norm") or "")
+            bc = float(best.get("conf") or 0.0)
+            bv = is_valid_ru_plate_strict(bp, region_check=decider.region_check)
+            if not _is_bad_ocr(bp, bc, bv):
+                break
+        timing_ms["orient"] += (time.time() - t_or0) * 1000.0
+
+    # --- 3) warp (дорого) ---
+    best_plate = str(best.get("plate_norm") or "")
+    best_conf = float(best.get("conf") or 0.0)
+    best_valid = is_valid_ru_plate_strict(best_plate, region_check=decider.region_check)
+
+    if ENV_OCR_WARP_TRY and _is_bad_ocr(best_plate, best_conf, best_valid):
+        t_w0 = time.time()
+        # warping делаем только для лучшего кандидата (а не для всех ориентаций)
+        # FIX: rectifier может падать — /infer не должен из-за этого падать
+        try:
+            warped, _quad = rectify_plate_quad(best_img, out_w=ENV_OCR_WARP_W, out_h=ENV_OCR_WARP_H)
+        except Exception:
+            warped = None
+
+        if warped is not None and getattr(warped, "size", 0) > 0:
+            t2 = time.time()
+            raw2, conf2 = ocr.infer_bgr(warped)
+            timing_ms["ocr"] += (time.time() - t2) * 1000.0
+            plate2 = normalize_ru_plate(raw2)
+            valid2 = is_valid_ru_plate_strict(plate2, region_check=decider.region_check)
+            sc2 = score_for(plate2, conf2, valid2)
+            if sc2 > float(best["score"]):
+                best.update(
+                    {
+                        "raw": str(raw2),
+                        "plate_norm": str(plate2),
+                        "conf": float(conf2),
+                        "variant": "warp",
+                        "warped": True,
+                        "score": sc2,
+                    }
+                )
+
+        timing_ms["warp"] += (time.time() - t_w0) * 1000.0
+
+    best["timing_ms"]["total"] = (time.time() - t_total0) * 1000.0
+    best.pop("score", None)
+    return best
+
+
+# =========================
+# ROUTES
+# =========================
+
+START_TS = time.time()
+
+@app.get("/health")
+def health():
+    """
+    Product health endpoint (v0.3.0)
+    Используется:
+    - UI (вкладка "Система")
+    - updater
+    - внешняя диагностика
+    """
+
+    uptime_sec = int(time.time() - START_TS)
+
+    return {
+        "ok": True,
+
+        # -------- Версия / сборка --------
+        "version": os.getenv("APP_VERSION", "dev"),
+        "git": os.getenv("GIT_SHA", ""),
+        "build_time": os.getenv("BUILD_TIME", ""),
+
+        # -------- Runtime --------
+        "uptime_sec": uptime_sec,
+
+        # -------- Конфигурация --------
+        "model": MODEL_PATH,
+        "settings_path": SETTINGS_PATH,
+
+        # -------- MQTT --------
+        "mqtt": {
+            "enabled": os.getenv("MQTT_ENABLED", "0") == "1",
+            "host": os.getenv("MQTT_HOST", ""),
+            "port": int(os.getenv("MQTT_PORT", "1883")),
+            "topic": os.getenv("MQTT_TOPIC", ""),
+        },
+
+        # -------- Последний номер (best-effort) --------
+        "last_plate": getattr(app.state, "last_plate", "") if hasattr(app.state, "last_plate") else "",
+    }
+# =========================================================
+# NEW: alias for UI routes (v0.3.1)
+# UI всегда ходит в /api/v1/... (через Vite proxy /api -> backend)
+# =========================================================
+@app.get("/api/v1/health")
+def health_v1():
+    return health()
+
+@app.post("/reload")
+def reload_whitelist():
+    """Перечитать whitelist.json без перезапуска контейнера."""
+    decider.reload_whitelist()
+    return {"ok": True, "whitelist_size": len(decider.whitelist)}
+
+
+@app.post("/infer")
+async def infer(
+    file: UploadFile = File(...),
+    pre_variant: str | None = Form(None),
+    pre_warped: str | None = Form(None),
+    pre_timing_ms: str | None = Form(None),
+):
+    """Принимает JPEG/PNG → OCR → gate-логика → MQTT → событие для UI."""
+    if not file.content_type or not file.content_type.startswith("image/"):
+        raise HTTPException(status_code=400, detail="upload an image")
+
+    data = await file.read()
+
+    # decode один раз
+    t_decode0 = time.time()
+    try:
+        arr = np.frombuffer(data, dtype=np.uint8)
+        img = cv2.imdecode(arr, cv2.IMREAD_COLOR)
+        if img is None:
+            raise ValueError("cannot decode image")
+
+        decode_ms = (time.time() - t_decode0) * 1000.0
+
+        best = _ocr_try_best(img)
+        raw = str(best.get("raw") or "")
+        plate_norm = str(best.get("plate_norm") or normalize_ru_plate(raw))
+        conf = float(best.get("conf") or 0.0)
+
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"cannot infer: {e}")
+
+    # -----------------------------
+    # meta от rtsp_worker (best-effort)
+    # -----------------------------
+    # NEW: rtsp_worker может присылать поля через multipart/form-data:
+    # - pre_variant: "crop" / "rectify" (или другое)
+    # - pre_warped: "1"/"0"/"true"/"false"
+    # - pre_timing_ms: JSON-строка с таймингами до /infer (например http_ms/rectify_ms)
+    pre_warped_bool: bool | None = None
+    if pre_warped is not None:
+        v = str(pre_warped).strip().lower()
+        if v in ("1", "true", "yes", "y", "on"):
+            pre_warped_bool = True
+        elif v in ("0", "false", "no", "n", "off"):
+            pre_warped_bool = False
+
+    pre_timing: Dict[str, Any] | None = None
+    if pre_timing_ms:
+        try:
+            x = json.loads(str(pre_timing_ms))
+            if isinstance(x, dict):
+                pre_timing = x
+        except Exception:
+            pre_timing = None
+
+    # -----------------------------
+    # Фильтрация OCR мусора (продуктовый режим)
+    # -----------------------------
+    # Мусор скрываем из UI и не печатаем в лог по умолчанию.
+    # Но в debug-режиме он сохраняется в событиях для диагностики.
+    valid_norm = is_valid_ru_plate_strict(plate_norm, region_check=decider.region_check)
+    noise = bool(is_noise_ocr(raw) and not valid_norm)
+
+    # FIX: GateDecider получает уже нормализованный номер
+    decision = decider.decide(plate_norm, conf)
+
+    # Если распознали откровенный мусор — помечаем reason (не ломая контракт)
+    if noise:
+        decision = {
+            **decision,
+            "ok": False,
+            "allowed": False,
+            "valid": False,
+            "reason": "noise_ocr",
+            "hits": 0,
+            "hits_window_sec": float(decider.window_sec),
+        }
+
+    # variant/warped для диагностики
+    variant = (pre_variant or best.get("variant") or best.get("ocr_variant") or "crop")
+    warped = pre_warped_bool if pre_warped_bool is not None else bool(best.get("warped", False))
+
+    timing_ms: Dict[str, Any] = {
+        "decode": round(float(decode_ms), 2),
+        **{k: round(float(v), 2) for k, v in dict(best.get("timing_ms") or {}).items()},
+    }
+    if isinstance(pre_timing, dict):
+        timing_ms["pre"] = pre_timing
+
+    payload: Dict[str, Any] = {
+        "ts": time.time(),
+        "raw": raw,
+        "plate_norm": plate_norm,
+        "conf": round(float(conf), 4),
+        # backward compat (старые ключи)
+        "ocr_variant": best.get("variant", "rot0"),
+        "ocr_warped": bool(best.get("warped", False)),
+        # новые унифицированные ключи
+        "variant": variant,
+        "warped": bool(warped),
+        "timing_ms": timing_ms,
+        "noise": bool(noise),
+        "log_level": "debug" if noise else "info",
+        "meta": {"variant": variant, "warped": bool(warped), "timing_ms": timing_ms},
+        # decision включает: plate/valid/allowed/ok/reason/stabilized/...
+        **decision,
+    }
+
+    # MQTT: публикуем только при ok (никогда не публикуем мусор)
+    published = False
+    if decision.get("ok") and not noise:
+        published = mqtt_publish(payload)
+    payload["mqtt_published"] = bool(published)
+
+    # UI events (не ломаем infer)
+    try:
+        push_event_from_infer(payload)
+    except Exception:
+        pass
+
+    # Логирование: по умолчанию печатаем только полезное
+    if PRINT_EVERY_RESPONSE or (DEBUG_LOG and noise) or (not noise and DEBUG_LOG):
+        try:
+            print(f"[infer] plate={payload.get('plate')} raw={payload.get('raw')} conf={payload.get('conf')} reason={payload.get('reason')} level={payload.get('log_level')}")
+        except Exception:
+            pass
+
+    return payload

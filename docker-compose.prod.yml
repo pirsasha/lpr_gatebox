@@ -1,0 +1,107 @@
+services:
+  gatebox:
+    build:
+      context: .
+      target: gatebox
+    container_name: gatebox
+    restart: unless-stopped
+    ports:
+      - "8080:8080"
+    environment:
+      APP_VERSION: "0.3.0"
+      GIT_SHA: "dev"
+      BUILD_TIME: "2026-02-07T00:00:00+03:00"
+
+      MODEL_PATH: "/models/plate_ocr.onnx"
+      SETTINGS_PATH: "/config/settings.json"
+      ALPHABET: "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ"
+      MIN_CONF: "0.80"
+      CONFIRM_N: "2"
+      CONFIRM_WINDOW_SEC: "2.0"
+      COOLDOWN_SEC: "15.0"
+      WHITELIST_PATH: "/config/whitelist.json"
+
+      MQTT_ENABLED: "1"
+      MQTT_HOST: "192.168.2.102"
+      MQTT_PORT: "1883"
+      MQTT_USER: "pirsasha"
+      MQTT_PASS: "Ps!628227!"
+      MQTT_TOPIC: "gate/open"
+
+      POSTCROP: "1"
+      POSTCROP_LRBT: "0.02,0.02,0.04,0.04"
+
+      UPDATER_URL: "http://updater:9010"
+
+    volumes:
+      - ./models:/models:ro
+      - ./config:/config
+
+  rtsp_worker:
+    build:
+      context: .
+      target: rtsp_worker
+    container_name: rtsp_worker
+    restart: unless-stopped
+    depends_on:
+      - gatebox
+    environment:
+      PYTHONPATH: "/work"
+      PYTHONUNBUFFERED: "1"
+
+      RTSP_URL: "rtsp://192.168.2.102:8554/vorota"
+      READ_FPS: "12"
+      DET_FPS: "2"
+      SEND_FPS: "1.5"
+      INFER_URL: "http://gatebox:8080/infer"
+
+      DET_MODEL_PATH: "/models/license-plate-finetune-v1s.pt"
+      DET_CONF: "0.40"
+      DET_IOU: "0.45"
+      DET_IMG_SIZE: "416"
+
+      PLATE_PAD: "0.14"
+      RECTIFY: "1"
+      RECTIFY_W: "320"
+      RECTIFY_H: "96"
+      REFINE_INNER_PAD: "0.02"
+      REFINE_MIN_AREA_RATIO: "0.02"
+
+      PLATE_RESEND_SEC: "0.4"
+      PLATE_CONFIRM_K: "2"
+      PLATE_CONFIRM_WINDOW_SEC: "1.8"
+
+      LIVE_DIR: "/config/live"
+      LIVE_EVERY_SEC: "2.0"
+      LIVE_DRAW_YOLO: "0"
+
+      OPENCV_FFMPEG_CAPTURE_OPTIONS: "rtsp_transport;tcp|stimeout;8000000|rw_timeout;30000000|fflags;nobuffer|flags;low_delay|max_delay;0|probesize;32000|analyzeduration;0"
+
+      SAVE_DIR: "/debug"
+      LOG_EVERY_SEC: "5"
+
+    volumes:
+      - ./models:/models:ro
+      - ./debug:/debug
+      - ./config:/config
+
+  updater:
+    build:
+      context: .
+      dockerfile: updater/Dockerfile
+    container_name: updater
+    restart: unless-stopped
+
+    ports:
+      - "127.0.0.1:9010:9010"
+
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - .:/project
+      - ./config:/config
+
+    environment:
+      PROJECT_DIR: /project
+      COMPOSE_FILE: docker-compose.prod.yml
+      CONFIG_DIR: /config
+      UPDATER_PORT: "9010"

@@ -1,0 +1,16 @@
+# --- web / api ---
+fastapi==0.115.6
+uvicorn==0.30.6
+python-multipart==0.0.9
+
+# --- cv / ml ---
+onnxruntime==1.17.1
+opencv-python-headless==4.9.0.80
+numpy==1.26.4
+
+# --- messaging / http ---
+paho-mqtt==2.1.0
+requests==2.32.3
+
+# --- YOLOv8 loader (без torch здесь!) ---
+ultralytics==8.3.0

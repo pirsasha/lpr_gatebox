@@ -1,0 +1,210 @@
+#==========================================================
+# LPR_GATEBOX (продуктовый compose)
+#----------------------------------------------------------
+# Идея: gatebox = OCR/логика/whitelist/MQTT
+#       rtsp_worker = RTSP чтение/декод/YOLO/кроп/отправка в gatebox
+#
+# ВАЖНО:
+# - Переменные RTSP/FFmpeg/декодирования ДОЛЖНЫ быть только в rtsp_worker.
+# - Переменные OCR/warp/confirm/MQTT ДОЛЖНЫ быть только в gatebox.
+# - Чтобы gatebox публиковал MQTT (ok=True), ему нужно набрать CONFIRM_N
+#   в окне CONFIRM_WINDOW_SEC. Поэтому rtsp_worker должен слать один и тот же номер
+#   чаще, чем это окно: PLATE_RESEND_SEC < CONFIRM_WINDOW_SEC (обычно 0.3–0.6).
+#
+# POSTCROP:
+# - Делается ТОЛЬКО в gatebox (после OCR), чтобы чуть подрезать края и убрать рамку/шум.
+# - Если "съедает" символы/флаг/края — уменьши POSTCROP_LRBT или выключи POSTCROP=0.
+#==========================================================
+
+services:
+  gatebox:
+    build:
+      context: .
+      target: gatebox
+    container_name: gatebox
+    restart: unless-stopped
+
+    ports:
+      - "8080:8080"
+
+    environment:
+      APP_VERSION: "0.3.0"
+      GIT_SHA: "dev"
+      BUILD_TIME: "2026-02-07T00:00:00+03:00"
+      # -------- Runtime --------
+      PYTHONUNBUFFERED: "1"
+
+      # -------- Логи gatebox --------
+      DEBUG_LOG: "0"
+      PRINT_EVERY_RESPONSE: "0"
+
+      # -------- OCR модель/настройки --------
+      MODEL_PATH: "/models/plate_ocr.onnx"
+      SETTINGS_PATH: "/config/settings.json"
+      ALPHABET: "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ"
+
+      # -------- Принятие решения + MQTT --------
+      MIN_CONF: "0.80"
+      CONFIRM_N: "2"
+      CONFIRM_WINDOW_SEC: "2.0"
+      COOLDOWN_SEC: "15.0"
+      WHITELIST_PATH: "/config/whitelist.json"
+
+      # -------- OCR повороты / warp (на стороне gatebox) --------
+      OCR_ORIENT_TRY: "1"
+      OCR_WARP_TRY: "1"
+      OCR_WARP_W: "320"
+      OCR_WARP_H: "96"
+
+      # -------- POSTCROP (ТОЛЬКО gatebox) --------
+      POSTCROP: "1"
+      # LEFT,RIGHT,TOP,BOTTOM (доли от размера)
+      POSTCROP_LRBT: "0.02,0.02,0.04,0.04"
+
+      # -------- Проверка региона / стабилизация региона --------
+      REGION_CHECK: "1"
+      REGION_STAB: "1"
+      REGION_STAB_WINDOW_SEC: "2.5"
+      REGION_STAB_MIN_HITS: "3"
+      REGION_STAB_MIN_RATIO: "0.60"
+
+      # -------- MQTT --------
+      MQTT_ENABLED: "1"
+      MQTT_HOST: "192.168.2.102"
+      MQTT_PORT: "1883"
+      MQTT_USER: "pirsasha"
+      MQTT_PASS: "Ps!628227!"
+      MQTT_TOPIC: "gate/open"
+
+    volumes:
+      - ./models:/models:ro
+      - ./config:/config
+
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "python",
+          "-c",
+          "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8080/health', timeout=2).read()",
+        ]
+      interval: 10s
+      timeout: 3s
+      retries: 10
+
+  rtsp_worker:
+    build:
+      context: .
+      target: rtsp_worker
+    container_name: rtsp_worker
+    restart: unless-stopped
+
+    depends_on:
+      - gatebox
+
+    environment:
+      # -------- Runtime --------
+      PYTHONPATH: "/work"
+      PYTHONUNBUFFERED: "1"
+
+      # -------- Логи worker --------
+      WORKER_DEBUG: "0"
+
+      # -------- LIVE preview для UI --------
+      LIVE_DIR: "/config/live"
+      LIVE_EVERY_SEC: "2.0"
+      LIVE_DRAW_YOLO: "0"
+
+      # -------- RTSP --------
+      RTSP_URL: "rtsp://192.168.2.102:8554/vorota"
+      RTSP_FPS: "1.0"
+
+      READ_FPS: "12"
+      DET_FPS: "2"
+      SEND_FPS: "1.5"
+
+      INFER_URL: "http://gatebox:8080/infer"
+
+      # ROI (пусто = весь кадр)
+      ROI: ""
+
+      # -------- YOLO детектор номера --------
+      DET_MODEL_PATH: "/models/license-plate-finetune-v1s.pt"
+      DET_CONF: "0.40"
+      DET_IOU: "0.45"
+      DET_IMG_SIZE: "416"
+
+      # -------- Crop / подготовка к OCR --------
+      PLATE_PAD: "0.14"
+      OCR_CROP_MODE: "yolo"
+      SEND_ON_NO_DET: "0"
+
+      # -------- Rectify (worker) --------
+      RECTIFY: "1"
+      RECTIFY_W: "320"
+      RECTIFY_H: "96"
+
+      # -------- Refine --------
+      REFINE_INNER_PAD: "0.02"
+      REFINE_MIN_AREA_RATIO: "0.02"
+
+      # -------- Отправка (HTTP) --------
+      JPEG_QUALITY: "85"
+      HTTP_TIMEOUT_SEC: "2.0"
+
+      # -------- Событийная логика worker --------
+      EVENT_MODE: "on_plate_change"
+      GLOBAL_SEND_MIN_INTERVAL_SEC: "0.5"
+
+      # Повторная отправка одного и того же номера (для confirm в gatebox)
+      PLATE_RESEND_SEC: "0.4"
+
+      # Предподтверждение на стороне worker (уменьшает мусор)
+      PLATE_CONFIRM_K: "2"
+      PLATE_CONFIRM_WINDOW_SEC: "1.8"
+
+      # -------- Tracking --------
+      TRACK_ENABLE: "1"
+      TRACK_HOLD_SEC: "1.0"
+      TRACK_ALPHA: "0.65"
+      TRACK_IOU_MIN: "0.12"
+
+      MIN_PLATE_W: "120"
+      MIN_PLATE_H: "30"
+
+      # -------- Freeze detector --------
+      FREEZE_ENABLE: "0"
+
+      # -------- Debug/сохранения --------
+      SAVE_DIR: "/debug"
+      SAVE_EVERY: "0"
+      SAVE_FULL_FRAME: "0"
+      SAVE_WITH_ROI: "0"
+      LOG_EVERY_SEC: "5"
+
+      # -------- FFmpeg/OpenCV тюнинг для RTSP --------
+      OPENCV_FFMPEG_CAPTURE_OPTIONS: "rtsp_transport;tcp|stimeout;8000000|rw_timeout;30000000|fflags;nobuffer|flags;low_delay|max_delay;0|probesize;32000|analyzeduration;0"
+
+    volumes:
+      - ./models:/models:ro
+      - ./debug:/debug
+      - ./config:/config
+      - ./debug_test:/work/debug_test
+      - ./test_images:/work/test_images:ro
+
+    command: ["python", "app/rtsp_worker.py"]
+
+  updater:
+    image: lpr_gatebox-updater
+    build:
+      context: .
+      dockerfile: updater/Dockerfile
+    container_name: updater
+    restart: unless-stopped
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - .:/project
+      - ./config:/config
+    environment:
+      PROJECT_DIR: /project
+      COMPOSE_FILE: docker-compose.yml
