@@ -1,0 +1,50 @@
+{
+  "mqtt": {
+    "enabled": true,
+    "host": "192.168.2.102",
+    "port": 1883,
+    "user": "pirsasha",
+    "pass": "Ps!628227!",
+    "topic": "gate/open"
+  },
+  "gate": {
+    "min_conf": 0.8,
+    "confirm_n": 2,
+    "confirm_window_sec": 2.0,
+    "cooldown_sec": 15.0,
+    "whitelist_path": "/config/whitelist.json",
+    "region_check": true,
+    "region_stab": true,
+    "region_stab_window_sec": 2.5,
+    "region_stab_min_hits": 3,
+    "region_stab_min_ratio": 0.6
+  },
+  "ui": {
+    "events_max": 200
+  },
+  "settings": {
+    "gate": {
+      "min_conf": 0.8,
+      "confirm_n": 2,
+      "confirm_window_sec": 2.0,
+      "cooldown_sec": 15.0,
+      "whitelist_path": "/config/whitelist.json",
+      "region_check": true,
+      "region_stab": true,
+      "region_stab_window_sec": 2.5,
+      "region_stab_min_hits": 3,
+      "region_stab_min_ratio": 0.6
+    },
+    "ui": {
+      "events_max": 200
+    },
+    "mqtt": {
+      "port": 1883,
+      "host": "192.168.2.102",
+      "pass": "",
+      "topic": "gate/open",
+      "user": "pirsasha",
+      "enabled": true
+    }
+  }
+}

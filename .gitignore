@@ -1,0 +1,22 @@
+# Python
+__pycache__/
+*.pyc
+
+# Runtime / secrets / live
+config/settings.json
+config/whitelist.json
+config/_rw_test
+config/live/
+
+# Local datasets / debug
+dataset_*/
+debug/
+debug_test/
+test_images/
+
+# Local models (keep out of repo)
+models/
+
+# UI build
+ui/node_modules/
+ui/dist/
