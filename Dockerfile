@@ -13,7 +13,10 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     ffmpeg \
     && rm -rf /var/lib/apt/lists/*
 
-# ---- deps layer (кэшируется) ----
+
+# =========================================================
+# deps layer (кэшируется)
+# =========================================================
 FROM base AS deps
 
 # Копируем ТОЛЬКО requirements — чтобы правки кода не ломали кэш
@@ -27,14 +30,42 @@ RUN --mount=type=cache,target=/root/.cache/pip \
       torch==2.2.2 torchvision==0.17.2 && \
     python -m pip install -r /work/requirements.txt
 
-# ---- gatebox runtime ----
+
+# =========================================================
+# ui build (vite -> dist)
+# =========================================================
+FROM node:20-alpine AS ui_build
+WORKDIR /ui
+
+# Кэш npm deps отдельно от исходников
+COPY ui/package.json ui/package-lock.json* /ui/
+RUN npm ci
+
+# Копируем исходники UI и собираем
+COPY ui/ /ui/
+RUN npm run build
+
+
+# =========================================================
+# gatebox runtime
+# =========================================================
 FROM base AS gatebox
 COPY --from=deps /usr/local /usr/local
+
+# backend
 COPY app /work/app
+
+# NEW: ui build output -> в контейнер
+# В app/main.py монтируй StaticFiles(directory="/work/app/static") на "/"
+COPY --from=ui_build /ui/dist /work/app/static
+
 EXPOSE 8080
 CMD ["python", "-m", "uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8080"]
 
-# ---- rtsp_worker runtime ----
+
+# =========================================================
+# rtsp_worker runtime
+# =========================================================
 FROM base AS rtsp_worker
 COPY --from=deps /usr/local /usr/local
 COPY app /work/app
