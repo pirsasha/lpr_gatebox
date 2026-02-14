@@ -24,14 +24,14 @@
   },
   "telegram": {
     "enabled": true,
-    "chat_id": "1745125515",
+    "chat_id": "",
     "thread_id": null,
     "send_photo": true,
     "photo_kind": "frame",
     "include_conf": true,
     "rate_limit_sec": 2,
     "pair_code": null,
-    "bot_token": "8580546225:AAH2_pLVlzXM0YgLd8Dfg9GkzOid_Txg348"
+    "bot_token": ""
   },
   "settings": {
     "gate": {
