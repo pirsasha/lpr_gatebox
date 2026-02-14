@@ -1,15 +1,19 @@
 # =========================================================
 # Файл: app/main.py
 # Проект: LPR GateBox
-# Версия: v0.3.1
-# Изменено: 2026-02-06 20:30 (UTC+3)
+# Версия: v0.3.5-fix-infer-soft-reject
+# Изменено: 2026-02-09 (UTC+3)
 # Автор: Александр
+# ---------------------------------------------------------
 # Что сделано:
-# - CHG: "мусор" OCR (8980/9994/короткие обрывки) помечается как debug и скрывается из UI по умолчанию
-# - NEW: /infer принимает meta от rtsp_worker (pre_variant/pre_warped/pre_timing_ms)
-# - NEW: payload.meta (variant/warped/timing_ms) для диагностики, при этом confirm/hits остаётся стабильным
-# - CHG: логирование: по умолчанию печатаем только полезное; мусор — только при DEBUG_LOG=1
-# - CHG: дефолт OCR_WARP_W/H уменьшен (быстрее на CPU мини‑ПК)
+# - FIX: /infer больше НЕ падает 400 из-за OCR/warp/orient ошибок.
+#        (раньше любые исключения внутри _ocr_try_best() превращались в HTTP 400)
+# - NEW: "soft reject" при OCR-ошибке: infer_ok=False, ok=False, reason="ocr_failed"/"empty_ocr"
+# - NEW: payload.ocr_error для диагностики (best-effort), чтобы понимать причину отказа без 400
+#
+# Важно:
+# - 400 остаётся ТОЛЬКО для невалидного запроса (не image) и битого decode.
+# - Любой "плохой OCR" или падение внутри OCR pipeline теперь штатно возвращает 200.
 # =========================================================
 
 # ИЗМЕНЕНО v0.2.9:
@@ -53,6 +57,7 @@ from app.integrations.telegram.notifier import TelegramNotifier
 from app.integrations.telegram.poller import TelegramPoller
 from app.api.ui_api import get_settings_store
 from app.api.telegram_api import router as telegram_router, set_telegram_hooks
+
 # quad/warp (best-effort внутри gatebox)
 # ВАЖНО: это отдельный путь от твоего refiner-а в rtsp_worker.
 try:
@@ -98,16 +103,18 @@ ENV_REGION_STAB_MIN_RATIO = float(os.environ.get("REGION_STAB_MIN_RATIO", "0.60"
 # OCR orientation / warp toggles (для прямых запросов в gatebox)
 ENV_OCR_ORIENT_TRY = os.environ.get("OCR_ORIENT_TRY", "1").strip().lower() not in ("0", "false", "no", "off", "")
 ENV_OCR_WARP_TRY = os.environ.get("OCR_WARP_TRY", "1").strip().lower() not in ("0", "false", "no", "off", "")
-# CHG v0.2.9: меньший размер warp заметно экономит CPU на мини‑ПК.
+# CHG v0.2.9: меньший размер warp заметно экономит CPU на мини-ПК.
 ENV_OCR_WARP_W = int(os.environ.get("OCR_WARP_W", "320"))
 ENV_OCR_WARP_H = int(os.environ.get("OCR_WARP_H", "96"))
 
 # NEW v0.2.9: критерии "плохого OCR" для adaptive pipeline
 ENV_OCR_BAD_MIN_LEN = int(os.environ.get("OCR_BAD_MIN_LEN", "6"))
 ENV_OCR_BAD_MIN_CONF = float(os.environ.get("OCR_BAD_MIN_CONF", "0.70"))
+
 # NEW: продуктовые флаги логирования
 DEBUG_LOG = os.environ.get("DEBUG_LOG", "0").strip().lower() in ("1", "true", "yes", "y", "on")
 PRINT_EVERY_RESPONSE = os.environ.get("PRINT_EVERY_RESPONSE", "0").strip().lower() in ("1", "true", "yes", "y", "on")
+
 DEFAULT_SETTINGS: Dict[str, Any] = {
     "mqtt": {
         "enabled": ENV_MQTT_ENABLED,
@@ -132,7 +139,7 @@ DEFAULT_SETTINGS: Dict[str, Any] = {
     "ui": {
         "events_max": int(os.environ.get("EVENTS_MAX", "200")),
     },
-        "telegram": {
+    "telegram": {
         "enabled": False,
         "chat_id": None,
         "thread_id": None,
@@ -157,6 +164,7 @@ app.include_router(ui_router, prefix="/api")
 app.include_router(ui_router, prefix="/api/v1")
 
 app.include_router(telegram_router)
+
 # =========================
 # CORE OBJECTS
 # =========================
@@ -165,6 +173,7 @@ decider = GateDecider()
 
 from app.api.ui_api import set_whitelist_reload_callback
 set_whitelist_reload_callback(decider.reload_whitelist)
+
 # =========================
 # MQTT (runtime config)
 # =========================
@@ -342,11 +351,13 @@ TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN", "").strip()
 _tg_notifier: TelegramNotifier | None = None
 _tg_poller: TelegramPoller | None = None
 
+
 def _tg_log(msg: str) -> None:
     try:
         print(msg, flush=True)
     except Exception:
         pass
+
 
 def _tg_get_cfg() -> Dict[str, Any]:
     try:
@@ -354,8 +365,10 @@ def _tg_get_cfg() -> Dict[str, Any]:
     except Exception:
         return {}
 
+
 def _tg_save_patch(patch: Dict[str, Any]) -> Dict[str, Any]:
     return get_settings_store().update(patch)
+
 
 def _tg_pick_photo_path(cfg: Dict[str, Any]) -> str | None:
     tg = cfg.get("telegram") if isinstance(cfg.get("telegram"), dict) else {}
@@ -380,6 +393,8 @@ def _tg_pick_photo_path(cfg: Dict[str, Any]) -> str | None:
     # fallback
     p = "/config/live/frame.jpg"
     return p if os.path.exists(p) else None
+
+
 def _tg_enqueue_text(text: str, photo_path: str | None):
     # используем тот же notifier, что и для ok=True
     if _tg_notifier is None:
@@ -390,6 +405,7 @@ def _tg_enqueue_text(text: str, photo_path: str | None):
         _tg_notifier.q.put_nowait(TgTask(text=text, photo_path=photo_path))
     except Exception:
         pass
+
 
 set_telegram_hooks(_tg_get_cfg, _tg_enqueue_text, _tg_pick_photo_path)
 
@@ -411,6 +427,7 @@ if TELEGRAM_BOT_TOKEN:
         _tg_log(f"[tg] ERROR: init failed: {type(e).__name__}: {e}")
 else:
     _tg_log("[tg] disabled (TELEGRAM_BOT_TOKEN not set)")
+
 # =========================
 # OCR helpers
 # =========================
@@ -578,6 +595,7 @@ def _ocr_try_best(img_bgr: np.ndarray) -> Dict[str, Any]:
 
 START_TS = time.time()
 
+
 @app.get("/health")
 def health():
     """
@@ -616,6 +634,8 @@ def health():
         # -------- Последний номер (best-effort) --------
         "last_plate": getattr(app.state, "last_plate", "") if hasattr(app.state, "last_plate") else "",
     }
+
+
 # =========================================================
 # NEW: alias for UI routes (v0.3.1)
 # UI всегда ходит в /api/v1/... (через Vite proxy /api -> backend)
@@ -623,6 +643,7 @@ def health():
 @app.get("/api/v1/health")
 def health_v1():
     return health()
+
 
 @app.post("/reload")
 def reload_whitelist():
@@ -646,21 +667,61 @@ async def infer(
 
     # decode один раз
     t_decode0 = time.time()
+
+    # NEW: дефолт best, чтобы ниже код (variant/timing) всегда был устойчивым
+    best: Dict[str, Any] = {
+        "raw": "",
+        "plate_norm": "",
+        "conf": 0.0,
+        "variant": "error",
+        "warped": False,
+        "timing_ms": {},
+    }
+
+    raw = ""
+    plate_norm = ""
+    conf = 0.0
+    decode_ms = 0.0
+
+    # NEW: diagnose without 400
+    ocr_error: str | None = None
+    infer_ok: bool = True
+
+    # -----------------------------
+    # 1) Decode (это реально "плохой запрос/данные" => 400)
+    # -----------------------------
     try:
         arr = np.frombuffer(data, dtype=np.uint8)
         img = cv2.imdecode(arr, cv2.IMREAD_COLOR)
         if img is None:
             raise ValueError("cannot decode image")
-
         decode_ms = (time.time() - t_decode0) * 1000.0
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"cannot decode image: {e}")
 
+    # -----------------------------
+    # 2) OCR pipeline (это НЕ ошибка запроса => soft reject, всегда 200)
+    # -----------------------------
+    try:
         best = _ocr_try_best(img)
         raw = str(best.get("raw") or "")
         plate_norm = str(best.get("plate_norm") or normalize_ru_plate(raw))
         conf = float(best.get("conf") or 0.0)
-
     except Exception as e:
-        raise HTTPException(status_code=400, detail=f"cannot infer: {e}")
+        # FIX: раньше тут было HTTP 400. Теперь это штатный отказ.
+        infer_ok = False
+        ocr_error = f"{type(e).__name__}: {e}"
+        best = {
+            "raw": "",
+            "plate_norm": "",
+            "conf": 0.0,
+            "variant": "error",
+            "warped": False,
+            "timing_ms": {},
+        }
+        raw = ""
+        plate_norm = ""
+        conf = 0.0
 
     # -----------------------------
     # meta от rtsp_worker (best-effort)
@@ -687,27 +748,46 @@ async def infer(
             pre_timing = None
 
     # -----------------------------
-    # Фильтрация OCR мусора (продуктовый режим)
+    # Решение gate-логики (soft reject для пустого/упавшего OCR)
     # -----------------------------
-    # Мусор скрываем из UI и не печатаем в лог по умолчанию.
-    # Но в debug-режиме он сохраняется в событиях для диагностики.
-    valid_norm = is_valid_ru_plate_strict(plate_norm, region_check=decider.region_check)
-    noise = bool(is_noise_ocr(raw) and not valid_norm)
-
-    # FIX: GateDecider получает уже нормализованный номер
-    decision = decider.decide(plate_norm, conf)
-
-    # Если распознали откровенный мусор — помечаем reason (не ломая контракт)
-    if noise:
-        decision = {
-            **decision,
-            "ok": False,
-            "allowed": False,
+    # FIX: если OCR упал или вернул пусто — НЕ вызываем decider.decide(), возвращаем штатный отказ
+    if not plate_norm:
+        decision: Dict[str, Any] = {
+            "plate": "",
             "valid": False,
-            "reason": "noise_ocr",
+            "allowed": False,
+            "ok": False,
+            "reason": "ocr_failed" if (not infer_ok) else "empty_ocr",
+            "stabilized": False,
+            "stab_reason": "empty",
             "hits": 0,
             "hits_window_sec": float(decider.window_sec),
         }
+        valid_norm = False
+        noise = True  # пустой OCR считаем "мусором" для UI по умолчанию
+    else:
+        # -----------------------------
+        # Фильтрация OCR мусора (продуктовый режим)
+        # -----------------------------
+        # Мусор скрываем из UI и не печатаем в лог по умолчанию.
+        # Но в debug-режиме он сохраняется в событиях для диагностики.
+        valid_norm = is_valid_ru_plate_strict(plate_norm, region_check=decider.region_check)
+        noise = bool(is_noise_ocr(raw) and not valid_norm)
+
+        # FIX: GateDecider получает уже нормализованный номер
+        decision = decider.decide(plate_norm, conf)
+
+        # Если распознали откровенный мусор — помечаем reason (не ломая контракт)
+        if noise:
+            decision = {
+                **decision,
+                "ok": False,
+                "allowed": False,
+                "valid": False,
+                "reason": "noise_ocr",
+                "hits": 0,
+                "hits_window_sec": float(decider.window_sec),
+            }
 
     # variant/warped для диагностики
     variant = (pre_variant or best.get("variant") or best.get("ocr_variant") or "crop")
@@ -722,12 +802,21 @@ async def infer(
 
     payload: Dict[str, Any] = {
         "ts": time.time(),
+
+        # NEW: health of infer (штатный отказ != 400)
+        "infer_ok": bool(infer_ok),
+
+        # NEW: diagnose OCR failures without breaking contract
+        "ocr_error": ocr_error,
+
         "raw": raw,
         "plate_norm": plate_norm,
         "conf": round(float(conf), 4),
+
         # backward compat (старые ключи)
         "ocr_variant": best.get("variant", "rot0"),
         "ocr_warped": bool(best.get("warped", False)),
+
         # новые унифицированные ключи
         "variant": variant,
         "warped": bool(warped),
@@ -735,24 +824,27 @@ async def infer(
         "noise": bool(noise),
         "log_level": "debug" if noise else "info",
         "meta": {"variant": variant, "warped": bool(warped), "timing_ms": timing_ms},
+
         # decision включает: plate/valid/allowed/ok/reason/stabilized/...
         **decision,
     }
 
     # MQTT: публикуем только при ok (никогда не публикуем мусор)
     published = False
-    if decision.get("ok") and not noise:
+    if payload.get("infer_ok") and decision.get("ok") and not noise:
         published = mqtt_publish(payload)
     payload["mqtt_published"] = bool(published)
+
     # Telegram notify: только при ok и не мусор (не блокируем infer)
     try:
-        if decision.get("ok") and not noise and _tg_notifier is not None:
+        if payload.get("infer_ok") and decision.get("ok") and not noise and _tg_notifier is not None:
             _tg_notifier.set_last_ok(payload)
             cfg = _tg_get_cfg()
             photo_path = _tg_pick_photo_path(cfg)
             _tg_notifier.enqueue_ok(payload, photo_path=photo_path)
     except Exception:
         pass
+
     # UI events (не ломаем infer)
     try:
         push_event_from_infer(payload)
@@ -762,11 +854,17 @@ async def infer(
     # Логирование: по умолчанию печатаем только полезное
     if PRINT_EVERY_RESPONSE or (DEBUG_LOG and noise) or (not noise and DEBUG_LOG):
         try:
-            print(f"[infer] plate={payload.get('plate')} raw={payload.get('raw')} conf={payload.get('conf')} reason={payload.get('reason')} level={payload.get('log_level')}")
+            print(
+                f"[infer] infer_ok={payload.get('infer_ok')} plate={payload.get('plate')} "
+                f"raw={payload.get('raw')} conf={payload.get('conf')} reason={payload.get('reason')} "
+                f"level={payload.get('log_level')} ocr_error={payload.get('ocr_error')}"
+            )
         except Exception:
             pass
 
     return payload
+
+
 # -------------------------
 # UI (static build)
 # -------------------------

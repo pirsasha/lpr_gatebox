@@ -1,20 +1,20 @@
 // ui/src/pages/System.jsx
 // LPR_GATEBOX UI
-// Версия: v0.3.2
-// Обновлено: 2026-02-08
+// Версия: v0.3.3-ru-i18n-system
+// Обновлено: 2026-02-11
 //
 // Что сделано:
-// - NEW: блок Telegram в "Система" (token/enabled/paired/test)
-// - KEEP: UI управления updater (status/check/start/report/log)
-// - KEEP: карточка "Ресурсы" (CPU/RAM/DISK + docker stats) из /api/v1/system/metrics
+// - CHG: Полная русификация страницы "Система"
+// - FIX: Ресурсы (CPU/RAM/DISK + docker stats) корректно отображаются по схеме /api/v1/system/metrics
+//        host.cpu_pct, host.mem_*_mb, host.disk_*.{used_mb,total_mb}, containers[].raw_mem
 
 import React, { useEffect, useMemo, useState } from "react";
-import { apiGet, apiPost, apiDownload, getSettings, putSettings } from "../api"; // <-- api.js в src
+import { apiGet, apiPost, apiDownload, getSettings, putSettings } from "../api";
 
 function fmtMB(x) {
   if (x == null || Number.isNaN(x)) return "—";
-  if (x > 1024) return `${(x / 1024).toFixed(1)} GB`;
-  return `${Math.round(x)} MB`;
+  if (x > 1024) return `${(x / 1024).toFixed(1)} ГБ`;
+  return `${Math.round(x)} МБ`;
 }
 
 function fmtPct(x) {
@@ -106,7 +106,7 @@ export default function SystemPage() {
       const r = await putSettings(tgSettings || {});
       setTgSettings(r?.settings || tgSettings);
       setTgDirty(false);
-      setTgInfo("Сохранено. Если менял token — нажми «Обновить сейчас» (перезапустит gatebox).");
+      setTgInfo("Сохранено ✅ Если менял токен — нажми «Обновить сейчас» (перезапустит gatebox).");
     } catch (e) {
       setTgErr(String(e?.message || e));
     } finally {
@@ -121,7 +121,7 @@ export default function SystemPage() {
       setTgBusy(true);
       const withPhoto = !!(tgSettings?.telegram?.send_photo ?? true);
       const r = await apiPost("/api/v1/telegram/test", {
-        text: "✅ GateBox: тест Telegram (из UI / Система)",
+        text: "✅ GateBox: тест Telegram (из UI → Система)",
         with_photo: withPhoto,
       });
       if (r?.ok) setTgInfo("Отправлено ✅ Проверь Telegram-чат.");
@@ -207,6 +207,9 @@ export default function SystemPage() {
   const updStep = updStatus?.step || "—";
   const updLast = updStatus?.last_result || "—";
 
+  const tgEnabled = !!tgSettings?.telegram?.enabled;
+  const tgPaired = !!tgSettings?.telegram?.chat_id;
+
   return (
     <div className="col">
       {err ? (
@@ -223,17 +226,17 @@ export default function SystemPage() {
             <div className="cardTitle">Состояние</div>
             <div className="row">
               <span className={`badge ${health?.ok ? "badge-green" : "badge-red"}`}>
-                {health?.ok ? "OK" : "BAD"}
+                {health?.ok ? "ОК" : "ПЛОХО"}
               </span>
             </div>
           </div>
           <div className="cardBody">
             <div className="kvGrid">
-              <KeyVal k="version" v={health?.version || "—"} mono />
+              <KeyVal k="версия" v={health?.version || "—"} mono />
               <KeyVal k="git" v={health?.git || "—"} mono />
-              <KeyVal k="build_time" v={health?.build_time || "—"} mono />
-              <KeyVal k="uptime" v={health?.uptime_sec != null ? `${health.uptime_sec}s` : "—"} mono />
-              <KeyVal k="model" v={health?.model || "—"} mono />
+              <KeyVal k="сборка" v={health?.build_time || "—"} mono />
+              <KeyVal k="аптайм" v={health?.uptime_sec != null ? `${health.uptime_sec}s` : "—"} mono />
+              <KeyVal k="модель OCR" v={health?.model || "—"} mono />
               <KeyVal k="settings" v={health?.settings_path || "—"} mono />
             </div>
 
@@ -242,12 +245,12 @@ export default function SystemPage() {
                 <div>
                   <div className="muted">MQTT</div>
                   <div className="mono">
-                    {health?.mqtt?.enabled ? "enabled" : "disabled"}{" "}
+                    {health?.mqtt?.enabled ? "включено" : "выключено"}{" "}
                     {health?.mqtt?.host ? `@ ${health.mqtt.host}:${health.mqtt.port}` : ""}
                   </div>
                 </div>
                 <div className="badge badge-blue">
-                  topic: <span className="mono">{health?.mqtt?.topic || "—"}</span>
+                  топик: <span className="mono">{health?.mqtt?.topic || "—"}</span>
                 </div>
               </div>
 
@@ -272,17 +275,17 @@ export default function SystemPage() {
           <div className="cardBody">
             <div className="row" style={{ justifyContent: "space-between" }}>
               <span className={`badge ${updRunning ? "badge-yellow" : "badge-gray"}`}>
-                {updRunning ? "RUNNING" : "IDLE"}
+                {updRunning ? "В ПРОЦЕССЕ" : "ОЖИДАНИЕ"}
               </span>
               <span className="badge badge-gray">
-                step: <span className="mono">{updStep}</span>
+                шаг: <span className="mono">{updStep}</span>
               </span>
               <span
                 className={`badge ${
                   updLast === "ok" ? "badge-green" : updLast === "error" ? "badge-red" : "badge-gray"
                 }`}
               >
-                last: <span className="mono">{updLast}</span>
+                итог: <span className="mono">{updLast}</span>
               </span>
             </div>
 
@@ -301,7 +304,7 @@ export default function SystemPage() {
             <div className="lastBlock" style={{ marginTop: 12 }}>
               <div className="row" style={{ justifyContent: "space-between" }}>
                 <div className="cardTitle" style={{ fontSize: 14 }}>
-                  Логи updater (tail)
+                  Логи updater (хвост)
                 </div>
                 <div className="row">
                   <button className="btn btn-ghost" type="button" onClick={onRefreshLog}>
@@ -328,8 +331,8 @@ export default function SystemPage() {
             </div>
 
             <div className="hint">
-              “Обновить сейчас” сделает docker-compose pull + up -d. Во время обновления UI может кратко моргнуть — это
-              нормально.
+              «Обновить сейчас» делает <span className="mono">docker compose pull</span> +{" "}
+              <span className="mono">up -d</span>. Во время обновления UI может кратко моргнуть — это нормально.
             </div>
           </div>
         </div>
@@ -340,20 +343,20 @@ export default function SystemPage() {
         <div className="cardHead">
           <div className="cardTitle">Telegram</div>
           <div className="row">
-            <span className={`badge ${tgSettings?.telegram?.enabled ? "badge-green" : "badge-gray"}`}>
-              {tgSettings?.telegram?.enabled ? "enabled" : "disabled"}
+            <span className={`badge ${tgEnabled ? "badge-green" : "badge-gray"}`}>
+              {tgEnabled ? "включено" : "выключено"}
             </span>
-            <span className={`badge ${tgSettings?.telegram?.chat_id ? "badge-green" : "badge-red"}`}>
-              {tgSettings?.telegram?.chat_id ? "paired" : "not paired"}
+            <span className={`badge ${tgPaired ? "badge-green" : "badge-red"}`}>
+              {tgPaired ? "привязан" : "не привязан"}
             </span>
           </div>
         </div>
 
         <div className="cardBody">
           <div className="kvGrid">
-            <KeyVal k="bot_token" v={tgSettings?.telegram?.bot_token ? "••••••••••••" : "—"} mono />
+            <KeyVal k="токен бота" v={tgSettings?.telegram?.bot_token ? "••••••••••••" : "—"} mono />
             <KeyVal k="chat_id" v={tgSettings?.telegram?.chat_id || "—"} mono />
-            <KeyVal k="send_photo" v={String(!!(tgSettings?.telegram?.send_photo ?? true))} mono />
+            <KeyVal k="фото" v={String(!!(tgSettings?.telegram?.send_photo ?? true))} mono />
           </div>
 
           <div className="lastBlock" style={{ marginTop: 12 }}>
@@ -379,7 +382,7 @@ export default function SystemPage() {
 
             <div style={{ marginTop: 12 }}>
               <div className="muted" style={{ marginBottom: 6 }}>
-                Token бота (клиент может создать своего бота через BotFather)
+                Токен бота (его можно получить через <span className="mono">BotFather</span>)
               </div>
               <input
                 className="input"
@@ -389,8 +392,8 @@ export default function SystemPage() {
                 onChange={(e) => patchTelegram("telegram.bot_token", e.target.value)}
               />
               <div className="hint" style={{ marginTop: 8 }}>
-                1) Вставь token → Сохранить. 2) Открой бота и нажми <span className="mono">/start</span>. 3) Нажми
-                “Отправить тест”.
+                1) Вставь токен → «Сохранить». 2) Открой бота и нажми <span className="mono">/start</span>. 3) Нажми
+                «Отправить тест».
               </div>
             </div>
 
@@ -402,7 +405,7 @@ export default function SystemPage() {
             ) : null}
             {tgInfo ? (
               <div className="alert" style={{ marginTop: 12 }}>
-                <div style={{ fontWeight: 800, marginBottom: 6 }}>OK</div>
+                <div style={{ fontWeight: 800, marginBottom: 6 }}>ОК</div>
                 <div>{tgInfo}</div>
               </div>
             ) : null}
@@ -411,7 +414,12 @@ export default function SystemPage() {
               <button className="btn btn-primary" type="button" onClick={saveTelegramSettings} disabled={!tgDirty || tgBusy}>
                 Сохранить
               </button>
-              <button className="btn btn-ghost" type="button" onClick={() => patchTelegram("telegram.chat_id", null)} disabled={tgBusy}>
+              <button
+                className="btn btn-ghost"
+                type="button"
+                onClick={() => patchTelegram("telegram.chat_id", null)}
+                disabled={tgBusy}
+              >
                 Сбросить привязку
               </button>
               <button className="btn btn-primary" type="button" onClick={telegramTest} disabled={tgBusy}>
@@ -430,7 +438,7 @@ export default function SystemPage() {
         <div className="cardHead">
           <div className="cardTitle">Ресурсы</div>
           <div className="row">
-            <span className="badge badge-gray">host</span>
+            <span className="badge badge-gray">хост</span>
             <span className="badge badge-yellow">rtsp_worker</span>
             <span className="badge badge-blue">gatebox</span>
             <span className="badge badge-gray">updater</span>
@@ -449,35 +457,35 @@ export default function SystemPage() {
                 </div>
                 <div className="cardBody">
                   <div className="kvGrid">
-                    <KeyVal k="cpu" v={fmtPct(host?.cpu_pct)} mono />
-                    <KeyVal k="ram used" v={fmtMB(host?.mem_used_mb)} mono />
-                    <KeyVal k="ram total" v={fmtMB(host?.mem_total_mb)} mono />
-                    <KeyVal k="ram avail" v={fmtMB(host?.mem_avail_mb)} mono />
+                    <KeyVal k="CPU" v={fmtPct(host?.cpu_pct)} mono />
+                    <KeyVal k="RAM занято" v={fmtMB(host?.mem_used_mb)} mono />
+                    <KeyVal k="RAM всего" v={fmtMB(host?.mem_total_mb)} mono />
+                    <KeyVal k="RAM доступно" v={fmtMB(host?.mem_avail_mb)} mono />
                   </div>
 
                   <div className="lastBlock">
-                    <div className="muted">Disk /</div>
+                    <div className="muted">Диск /</div>
                     <div className="mono">
                       {diskRoot?.used_mb != null && diskRoot?.total_mb != null
-                        ? `${fmtInt(diskRoot.used_mb)} MB / ${fmtInt(diskRoot.total_mb)} MB`
+                        ? `${fmtInt(diskRoot.used_mb)} МБ / ${fmtInt(diskRoot.total_mb)} МБ`
                         : "—"}
                     </div>
 
                     <div style={{ marginTop: 10 }} className="muted">
-                      Disk /project
+                      Диск /project
                     </div>
                     <div className="mono">
                       {diskProject?.used_mb != null && diskProject?.total_mb != null
-                        ? `${fmtInt(diskProject.used_mb)} MB / ${fmtInt(diskProject.total_mb)} MB`
+                        ? `${fmtInt(diskProject.used_mb)} МБ / ${fmtInt(diskProject.total_mb)} МБ`
                         : "—"}
                     </div>
 
                     <div style={{ marginTop: 10 }} className="muted">
-                      Disk /config
+                      Диск /config
                     </div>
                     <div className="mono">
                       {diskConfig?.used_mb != null && diskConfig?.total_mb != null
-                        ? `${fmtInt(diskConfig.used_mb)} MB / ${fmtInt(diskConfig.total_mb)} MB`
+                        ? `${fmtInt(diskConfig.used_mb)} МБ / ${fmtInt(diskConfig.total_mb)} МБ`
                         : "—"}
                     </div>
                   </div>
@@ -498,16 +506,16 @@ export default function SystemPage() {
                 <div className="cardBody">
                   <div className="table">
                     <div className="tr th">
-                      <div>name</div>
-                      <div>cpu</div>
-                      <div>mem</div>
+                      <div>контейнер</div>
+                      <div>CPU</div>
+                      <div>память</div>
                     </div>
 
                     {Array.isArray(containers) && containers.length ? (
                       containers.map((c, idx) => (
                         <div className="tr" key={idx}>
                           <div className="mono">{c?.name || "—"}</div>
-                          <div className="mono">{c?.cpu_pct || "—"}</div>
+                          <div className="mono">{c?.cpu_pct != null ? fmtPct(c.cpu_pct) : "—"}</div>
                           <div className="mono">{c?.raw_mem || "—"}</div>
                         </div>
                       ))
@@ -517,19 +525,20 @@ export default function SystemPage() {
                   </div>
 
                   <div className="hint" style={{ marginTop: 10 }}>
-                    Если rtsp_worker стабильно &gt;100% CPU — это нормально (YOLO + декод), но можно снижать DET_FPS/READ_FPS
-                    или уменьшать imgsz.
+                    Если <span className="mono">rtsp_worker</span> стабильно &gt;100% CPU — это нормально (YOLO + декод).
+                    Можно снижать <span className="mono">DET_FPS</span>/<span className="mono">READ_FPS</span> или уменьшать{" "}
+                    <span className="mono">imgsz</span>.
                   </div>
 
                   <div className="footer">
                     <span className="badge badge-gray">
-                      gatebox cpu: <span className="mono">{cGatebox?.cpu_pct || "—"}</span>
+                      gatebox CPU: <span className="mono">{cGatebox?.cpu_pct != null ? fmtPct(cGatebox.cpu_pct) : "—"}</span>
                     </span>
                     <span className="badge badge-gray">
-                      worker cpu: <span className="mono">{cWorker?.cpu_pct || "—"}</span>
+                      worker CPU: <span className="mono">{cWorker?.cpu_pct != null ? fmtPct(cWorker.cpu_pct) : "—"}</span>
                     </span>
                     <span className="badge badge-gray">
-                      updater cpu: <span className="mono">{cUpdater?.cpu_pct || "—"}</span>
+                      updater CPU: <span className="mono">{cUpdater?.cpu_pct != null ? fmtPct(cUpdater.cpu_pct) : "—"}</span>
                     </span>
                   </div>
                 </div>

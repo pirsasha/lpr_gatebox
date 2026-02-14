@@ -1,13 +1,18 @@
 # =========================================================
 # Файл: app/gate_logic.py
 # Проект: LPR GateBox
-# Версия: v0.3.1
-# Изменено: 2026-02-06 20:30 (UTC+3)
+# Версия: v0.3.2
+# Изменено: 2026-02-09  (UTC+3)
 # Автор: Александр
 # ---------------------------------------------------------
 # Что сделано:
-# - NEW: cleanup_ocr_raw() и is_noise_ocr() — эвристики для отсечения "мусора" OCR (8980/9994/короткие обрывки)
-# - NOTE: сама gate-логика (decide) остаётся детерминированной и работает по plate_norm
+# - FIX: normalize_ru_plate() стал best-effort:
+#        * парсит номер "сквозь мусор" (берём символы по порядку)
+#        * поддерживает кейс, когда OCR съедает удвоенную букву (НН -> Н)
+#        * НЕ угадывает отсутствующую первую букву (это невозможно без whitelist)
+# - NEW: опциональный fuzzy_whitelist_enabled (по умолчанию False):
+#        * если включить — при нестрогом OCR пробуем найти ближайший номер из whitelist
+#          (малый edit-distance, ранний выход), и тогда можно "восстановить" У616НН761
 # =========================================================
 
 from __future__ import annotations
@@ -17,7 +22,7 @@ import os
 import re
 import time
 from dataclasses import dataclass, field
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional, Tuple
 
 # ----------------------------
 # Алфавиты / маппинги
@@ -76,6 +81,7 @@ def is_valid_region(region: str) -> bool:
     if not region:
         return False
     if not KNOWN_REGIONS:
+        # FIX: по умолчанию допускаем и 2, и 3 цифры (161 и 761 оба валидны)
         return bool(re.fullmatch(r"\d{2,3}", region))
     return region in KNOWN_REGIONS
 
@@ -92,7 +98,7 @@ def is_valid_ru_plate_strict(plate: str, region_check: bool = True) -> bool:
 
 
 # ----------------------------
-# Нормализация
+# Нормализация (best-effort)
 # ----------------------------
 def _cleanup_and_map(pred: str) -> str:
     """Базовая чистка: upper + LAT->CYR + фильтр RU_ALLOWED."""
@@ -102,88 +108,106 @@ def _cleanup_and_map(pred: str) -> str:
     return s
 
 
+def _take_letter(ch: str) -> Optional[str]:
+    """Берём символ как букву РФ номера (с минимальной починкой цифр->букв)."""
+    if ch in RU_LETTERS:
+        return ch
+    if ch in DIGIT2LETTER:
+        return DIGIT2LETTER[ch]
+    return None
+
+
+def _take_digit(ch: str) -> Optional[str]:
+    """Берём символ как цифру (с минимальной починкой букв->цифр)."""
+    if ch in RU_DIGITS:
+        return ch
+    d = LETTER2DIGIT.get(ch)
+    if d in RU_DIGITS:
+        return d
+    return None
+
+
+def _build_strict_from_stream(prefix: str, region: str) -> str:
+    """
+    Пробуем собрать L DDD LL + region из prefix, проходя по символам слева направо.
+
+    ВАЖНО:
+    - мы НЕ можем восстановить отсутствующую первую букву, если её вообще нет в prefix.
+      (пример: "616Н761" -> не восстановить "У" без whitelist/fuzzy)
+    - но можем чинить частый кейс: OCR "съел" вторую букву (НН -> Н).
+    """
+    if not prefix or not region:
+        return ""
+
+    # 1) L (первую букву берём как "первую встреченную букву" в prefix)
+    L1: Optional[str] = None
+    i = 0
+    while i < len(prefix) and L1 is None:
+        L1 = _take_letter(prefix[i])
+        i += 1
+    if L1 is None:
+        return ""
+
+    # 2) DDD (дальше набираем 3 цифры)
+    digits: List[str] = []
+    while i < len(prefix) and len(digits) < 3:
+        d = _take_digit(prefix[i])
+        if d is not None:
+            digits.append(d)
+        i += 1
+    if len(digits) != 3:
+        return ""
+
+    # 3) LL (дальше набираем 2 буквы)
+    letters: List[str] = []
+    while i < len(prefix) and len(letters) < 2:
+        L = _take_letter(prefix[i])
+        if L is not None:
+            letters.append(L)
+        i += 1
+
+    # FIX: если нашли только 1 букву — часто это "НН" -> "Н" (OCR слип)
+    if len(letters) == 1:
+        letters.append(letters[0])
+
+    if len(letters) != 2:
+        return ""
+
+    plate = f"{L1}{digits[0]}{digits[1]}{digits[2]}{letters[0]}{letters[1]}{region}"
+    return plate
+
+
 def normalize_ru_plate(pred_latin: str) -> str:
     """
-    Умная нормализация под РФ номер:
+    Best-effort нормализация под РФ номер.
 
-    1) чистим строку (LAT->CYR, выкидываем мусор)
-    2) пробуем выделить регион (последние 2-3 цифры)
-    3) из префикса собираем [L][DDD][LL] с починкой O/0:
-       - на позиции цифр: О->0 (и ещё немного безопасных замен)
-       - на позиции букв: 0->О, 8->В (минимально)
-       - если цифр меньше 3 — добиваем слева нулями
+    Цели:
+    - получить максимально "строгий" формат LDDDLLRR (RR = 2-3 цифры)
+    - максимально терпимо к OCR-артефактам (мусор/пропуски)
+    - НЕ угадываем отсутствующую первую букву (невозможно без внешних данных)
 
-    Если собрать не получилось — возвращаем "как было после чистки".
+    Алгоритм:
+    1) чистим строку (LAT->CYR, фильтр RU_ALLOWED)
+    2) выделяем регион (последние 2-3 цифры)
+    3) пытаемся собрать строгий номер из prefix (сквозной парсер)
+    4) если не вышло — возвращаем "как есть после чистки"
     """
     s = _cleanup_and_map(pred_latin)
     if not s:
         return ""
 
-    # 1) регион (2-3 цифры в конце)
+    # регион: последние 2-3 цифры
     m = re.search(r"(\d{2,3})$", s)
-    region = m.group(1) if m else ""
-    prefix = s[: -len(region)] if region else s
-
-    if not region:
+    if not m:
         return s
 
-    if len(prefix) < 3:
+    region = m.group(1)
+    prefix = s[: -len(region)]
+    if not prefix:
         return s
 
-    def take_letter(ch: str) -> str:
-        if ch in RU_LETTERS:
-            return ch
-        if ch in DIGIT2LETTER:
-            return DIGIT2LETTER[ch]
-        return ch
-
-    def take_digit(ch: str) -> str:
-        if ch in RU_DIGITS:
-            return ch
-        return LETTER2DIGIT.get(ch, ch)
-
-    # L
-    L1 = take_letter(prefix[0])
-
-    rest = prefix[1:]
-    digits: List[str] = []
-    letters: List[str] = []
-
-    # DDD
-    i = 0
-    while i < len(rest) and len(digits) < 3:
-        d = take_digit(rest[i])
-        if d in RU_DIGITS:
-            digits.append(d)
-        i += 1
-
-    if len(digits) < 3:
-        digits = (["0"] * (3 - len(digits))) + digits
-
-    # LL
-    while i < len(rest) and len(letters) < 2:
-        L = take_letter(rest[i])
-        if L in RU_LETTERS:
-            letters.append(L)
-        else:
-            if rest[i] in DIGIT2LETTER:
-                letters.append(DIGIT2LETTER[rest[i]])
-        i += 1
-
-    if len(letters) < 2:
-        tail = prefix[1:]
-        for ch in tail:
-            if len(letters) >= 2:
-                break
-            L = take_letter(ch)
-            if L in RU_LETTERS and L not in letters:
-                letters.append(L)
-
-    if L1 not in RU_LETTERS or len(digits) != 3 or len(letters) != 2:
-        return s
-
-    normalized = f"{L1}{''.join(digits)}{''.join(letters)}{region}"
-    return normalized
+    built = _build_strict_from_stream(prefix, region)
+    return built if built else s
 
 
 # ----------------------------
@@ -199,19 +223,12 @@ def cleanup_ocr_raw(raw: str) -> str:
     if raw is None:
         return ""
     s = str(raw).strip().upper()
-    # убираем разделители, которые часто прилетают из OCR/пайплайна
     s = re.sub(r"[\s\-_:;,.]+", "", s)
     return s
 
 
 def is_noise_ocr(raw: str) -> bool:
-    """Эвристика: считаем результат OCR "мусором" и скрываем его из UI по умолчанию.
-
-    Критерии (best-effort):
-    - слишком коротко (<=4) → почти всегда не номер
-    - только цифры и длина <=5 → типичный мусор (8980/9994/123)
-    - повторяющиеся цифры (9994/0000) → мусор
-    """
+    """Эвристика: считаем результат OCR "мусором" и скрываем его из UI по умолчанию."""
     s = cleanup_ocr_raw(raw)
     if not s:
         return True
@@ -219,10 +236,8 @@ def is_noise_ocr(raw: str) -> bool:
         return True
     if s.isdigit() and len(s) <= 5:
         return True
-    # частые "псевдо-номера" из 4 цифр, особенно с 8/9
     if s.isdigit() and len(s) == 4 and s[0] in ("8", "9"):
         return True
-    # повторяющиеся символы (0000, 8888)
     if len(s) >= 4 and len(set(s)) == 1:
         return True
     return False
@@ -230,7 +245,7 @@ def is_noise_ocr(raw: str) -> bool:
 
 def _whitelist_preclean(s: str) -> str:
     """
-    CHG v0.3.0: whitelist может содержать пробелы/дефисы/подчёркивания и т.п.
+    whitelist может содержать пробелы/дефисы/подчёркивания и т.п.
     Пример: "У 616 НН 761" -> "У616НН761"
     """
     if s is None:
@@ -238,6 +253,54 @@ def _whitelist_preclean(s: str) -> str:
     s2 = str(s).strip().upper()
     s2 = re.sub(r"[\s\-_]+", "", s2)
     return s2
+
+
+# ----------------------------
+# Fuzzy match по whitelist (ОПЦИОНАЛЬНО)
+# ----------------------------
+def _levenshtein_limited(a: str, b: str, max_dist: int) -> int:
+    """
+    Левенштейн с ранним выходом (если точно > max_dist).
+    Нужен только для маленького max_dist (1-3).
+    """
+    if a == b:
+        return 0
+    if abs(len(a) - len(b)) > max_dist:
+        return max_dist + 1
+
+    # dp по строкам
+    prev = list(range(len(b) + 1))
+    for i, ca in enumerate(a, 1):
+        cur = [i]
+        min_row = cur[0]
+        for j, cb in enumerate(b, 1):
+            cost = 0 if ca == cb else 1
+            cur.append(min(prev[j] + 1, cur[j - 1] + 1, prev[j - 1] + cost))
+            if cur[-1] < min_row:
+                min_row = cur[-1]
+        if min_row > max_dist:
+            return max_dist + 1
+        prev = cur
+    return prev[-1]
+
+
+def _fuzzy_pick_from_whitelist(plate_norm: str, whitelist: set[str], max_dist: int = 2) -> Tuple[str, int]:
+    """
+    Возвращает (best_plate, dist). Если не нашли — ("", max_dist+1)
+    """
+    if not plate_norm or not whitelist:
+        return ("", max_dist + 1)
+
+    best = ""
+    best_d = max_dist + 1
+    for w in whitelist:
+        d = _levenshtein_limited(plate_norm, w, max_dist=max_dist)
+        if d < best_d:
+            best_d = d
+            best = w
+            if best_d == 0:
+                break
+    return (best, best_d)
 
 
 # ----------------------------
@@ -254,25 +317,16 @@ class GateDecider:
     whitelist: set[str] = field(default_factory=set)
 
     region_check: bool = True
-    region_stab: bool = True
-    region_stab_window_sec: float = 2.5
-    region_stab_min_hits: int = 3
-    region_stab_min_ratio: float = 0.60
+
+    # NEW: fuzzy whitelist match (по умолчанию выключено — безопасный режим)
+    # Если включить, то OCR с пропусками может быть "восстановлен" до whitelist-номера.
+    fuzzy_whitelist_enabled: bool = False
+    fuzzy_max_dist: int = 2
 
     _hits: Dict[str, List[float]] = field(default_factory=dict)
     _last_open_ts: float = 0.0
 
     def __post_init__(self) -> None:
-        """
-        FIX v0.3.0:
-        Загружаем whitelist сразу при создании decider.
-
-        Иначе при старте мог быть сценарий:
-        - decider создан
-        - apply_settings() не трогал whitelist_path
-        - reload_whitelist() не вызвали
-        => whitelist пустой => not_in_whitelist даже для "разрешенных".
-        """
         self.reload_whitelist()
 
     def reload_whitelist(self) -> None:
@@ -307,7 +361,6 @@ class GateDecider:
         arr = self._hits.get(plate_norm, [])
         arr.append(ts)
 
-        # чистим старые по окну
         w = float(self.window_sec)
         arr = [t for t in arr if ts - t <= w]
         self._hits[plate_norm] = arr
@@ -333,7 +386,25 @@ class GateDecider:
                 "hits_window_sec": hits_window_sec,
             }
 
+        # 1) строгая валидация
         valid = is_valid_ru_plate_strict(plate_norm, region_check=self.region_check)
+
+        # 2) NEW: (опционально) fuzzy восстановление до whitelist-номера
+        #    Это решает кейсы типа: "У616Н761" -> "У616НН761" (OCR съел одну Н).
+        #    Но если OCR вообще потерял первую букву ("616Н761"), то fuzzy может помочь
+        #    только если whitelist маленький и номер уникален — поэтому выключено по умолчанию.
+        fuzzy_used = False
+        fuzzy_dist = None
+        if (not valid) and self.fuzzy_whitelist_enabled and self.whitelist:
+            best, dist = _fuzzy_pick_from_whitelist(
+                plate_norm, self.whitelist, max_dist=int(self.fuzzy_max_dist)
+            )
+            if best and dist <= int(self.fuzzy_max_dist):
+                plate_norm = best
+                valid = True
+                fuzzy_used = True
+                fuzzy_dist = dist
+
         if not valid:
             return {
                 "plate": plate_norm,
@@ -345,6 +416,8 @@ class GateDecider:
                 "stab_reason": "no_loose_match",
                 "hits": 0,
                 "hits_window_sec": hits_window_sec,
+                "fuzzy_used": fuzzy_used,
+                "fuzzy_dist": fuzzy_dist,
             }
 
         if float(conf) < float(self.min_conf):
@@ -358,11 +431,12 @@ class GateDecider:
                 "stab_reason": "no_loose_match",
                 "hits": 0,
                 "hits_window_sec": hits_window_sec,
+                "fuzzy_used": fuzzy_used,
+                "fuzzy_dist": fuzzy_dist,
             }
 
         allowed = self._in_whitelist(plate_norm)
         if not allowed:
-            # копим подтверждения даже если не в whitelist (для UI/статистики)
             self._push_hit(plate_norm, now)
             hits = len(self._hits.get(plate_norm, []))
             stabilized = hits >= int(self.confirm_n)
@@ -376,9 +450,10 @@ class GateDecider:
                 "stab_reason": "not_enough_hits" if not stabilized else "confirmed_but_not_allowed",
                 "hits": hits,
                 "hits_window_sec": hits_window_sec,
+                "fuzzy_used": fuzzy_used,
+                "fuzzy_dist": fuzzy_dist,
             }
 
-        # confirm/hits
         self._push_hit(plate_norm, now)
         hits = len(self._hits.get(plate_norm, []))
         if hits < int(self.confirm_n):
@@ -392,6 +467,8 @@ class GateDecider:
                 "stab_reason": "not_enough_hits",
                 "hits": hits,
                 "hits_window_sec": hits_window_sec,
+                "fuzzy_used": fuzzy_used,
+                "fuzzy_dist": fuzzy_dist,
             }
 
         if not self._cooldown_ok(now):
@@ -405,6 +482,8 @@ class GateDecider:
                 "stab_reason": "cooldown",
                 "hits": hits,
                 "hits_window_sec": hits_window_sec,
+                "fuzzy_used": fuzzy_used,
+                "fuzzy_dist": fuzzy_dist,
             }
 
         self._last_open_ts = now
@@ -413,9 +492,11 @@ class GateDecider:
             "valid": True,
             "allowed": True,
             "ok": True,
-            "reason": "ok",
+            "reason": "ok" if not fuzzy_used else "ok_fuzzy_whitelist",
             "stabilized": True,
             "stab_reason": "confirmed",
             "hits": hits,
             "hits_window_sec": hits_window_sec,
+            "fuzzy_used": fuzzy_used,
+            "fuzzy_dist": fuzzy_dist,
         }

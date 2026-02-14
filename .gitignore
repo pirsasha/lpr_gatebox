@@ -1,19 +1,43 @@
-# secrets
+# =========================================================
+# LPR GateBox — .gitignore
+# =========================================================
+
+# secrets (реальные файлы конфигов не коммитим)
 config/settings.json
 config/whitelist.json
+.env
 
-# runtime
+# runtime / generated
 config/live/
 debug/
 debug_test/
+debug_video/
+videos/
 dataset_*/
 test_images/
-models/
+log.txt
+*.log
+
+# models: ВАЖНО!
+# модели теперь ХРАНИМ В РЕПО (чтобы чистая установка не падала)
+# но можно игнорировать временные/кэш файлы, если появятся
+models/*.engine
+models/*.cache
+models/tmp/
+models/.cache/
 
 # python
 __pycache__/
 *.pyc
+*.pyo
+*.pyd
+.venv/
+.ruff_cache/
 
 # ui
 ui/node_modules/
 ui/dist/
+
+# os
+.DS_Store
+Thumbs.db

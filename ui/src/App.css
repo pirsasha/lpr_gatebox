@@ -1,7 +1,11 @@
 /**
+ * =========================================================
  * FILE: ui/src/App.css
- * UPDATED: 2026-02-01 20:25 (+0300)
- * WHAT: Тёмный “умный дом” UI без Tailwind: карточки, кнопки, вкладки, таблица
+ * UPDATED: 2026-02-11 (+0300)
+ * WHAT:
+ * - Тёмный UI (карточки/таблицы/бейджи/кнопки)
+ * - Цветные бейджи статусов: ok/denied/invalid/cooldown/low_conf
+ * =========================================================
  */
 
 :root{
@@ -27,8 +31,10 @@
 
   --r-lg: 18px;
   --r-md: 14px;
+
   --shadow: 0 12px 30px rgba(0,0,0,.35);
   --shadow2: 0 10px 20px rgba(0,0,0,.25);
+
   font-family: system-ui, -apple-system, Segoe UI, Roboto, Arial;
   color-scheme: dark;
 }
@@ -50,6 +56,8 @@ body{
   padding: 18px;
 }
 
+.content{ margin-top: 14px; }
+
 .topbar{
   display:flex;
   align-items:flex-end;
@@ -63,7 +71,6 @@ body{
   font-weight: 850;
   letter-spacing: .2px;
 }
-
 .brandSub{
   margin-top: 4px;
   color: var(--muted);
@@ -106,27 +113,14 @@ body{
   gap: 14px;
 }
 @media (max-width: 980px){
-  .grid{ grid-template-columns: 1fr; }
-}
-
-/* Чуть красивее “внутренние” блоки */
-.lastBlock{
-  margin-top: 10px;
-  padding: 12px 12px;
-  border-radius: var(--r-md);
-  background: rgba(255,255,255,.03);
-  border: 1px solid rgba(255,255,255,.07);
-}
-
-/* чтобы кнопка не “скакала” визуально на auto-refresh */
-.btn{
-  user-select: none;
+  .grid, .grid2{ grid-template-columns: 1fr; }
 }
 
 .col{ display:flex; flex-direction:column; gap: 14px; }
-@media (max-width: 980px){
-  .grid2{ grid-template-columns: 1fr; }
-}
+.row{ display:flex; gap:10px; flex-wrap: wrap; align-items:center; }
+
+.muted{ color: var(--muted); }
+.mono{ font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
 
 .card{
   background: var(--panel);
@@ -154,11 +148,16 @@ body{
   padding: 14px;
 }
 
-.row{ display:flex; gap:10px; flex-wrap: wrap; align-items:center; }
-.muted{ color: var(--muted); }
-.mono{ font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+.lastBlock{
+  margin-top: 10px;
+  padding: 12px 12px;
+  border-radius: var(--r-md);
+  background: rgba(255,255,255,.03);
+  border: 1px solid rgba(255,255,255,.07);
+}
 
 .btn{
+  user-select: none;
   cursor: pointer;
   border-radius: 12px;
   padding: 10px 12px;
@@ -188,6 +187,7 @@ body{
   color: var(--text);
 }
 
+/* ===== ALERTS ===== */
 .alert{
   padding: 12px 14px;
   border-radius: var(--r-md);
@@ -207,13 +207,7 @@ body{
   border: 1px dashed rgba(255,255,255,.12);
 }
 
-.lastBlock .plateBig{
-  font-size: 32px;
-  font-weight: 900;
-  letter-spacing: 1px;
-  margin-bottom: 4px;
-}
-
+/* ===== BADGES ===== */
 .badge{
   display:inline-flex;
   align-items:center;
@@ -223,112 +217,72 @@ body{
   border: 1px solid var(--border2);
   font-size: 12px;
   font-weight: 750;
+  letter-spacing: .02em;
 }
+
 .badge-gray{ background: rgba(255,255,255,.06); }
 .badge-green{ background: var(--ok2); border-color: rgba(80,200,120,.22); }
 .badge-red{ background: var(--danger2); border-color: rgba(255,80,80,.22); }
 .badge-blue{ background: var(--acc2); border-color: rgba(90,140,255,.22); }
 .badge-yellow{ background: var(--warn2); border-color: rgba(255,200,80,.22); }
 
-.table{ display:flex; flex-direction:column; gap: 8px; }
-.thead, .trow{
-  display:grid;
-  grid-template-columns: 170px 170px 120px 1fr 90px;
-  gap: 10px;
-  align-items:center;
+/* ===== TABLE (HTML table) ===== */
+.table{
+  width:100%;
+  border-collapse: collapse;
 }
-.thead{
-  color: var(--muted);
+
+.table th{
+  text-align:left;
   font-size: 12px;
+  letter-spacing:.08em;
   text-transform: uppercase;
-  letter-spacing: .08em;
+  color: var(--muted);
+  padding: 12px 14px;
   border-bottom: 1px solid var(--border2);
-  padding: 8px 6px;
-}
-.trow{
-  padding: 10px 10px;
-  border-radius: 14px;
   background: rgba(255,255,255,.03);
+}
+
+.table td{
+  padding: 12px 14px;
+  border-bottom: 1px solid rgba(255,255,255,.05);
+}
+
+.table tr:hover td{
+  background: rgba(255,255,255,.02);
+}
+
+/* ===== INPUT ===== */
+.input{
+  width: 320px;
+  max-width: 100%;
+  padding: 10px 12px;
+  border-radius: 12px;
   border: 1px solid var(--border2);
-}
-@media (max-width: 980px){
-  .thead{ display:none; }
-  .trow{ grid-template-columns: 1fr; gap: 6px; }
+  background: rgba(255,255,255,.05);
+  color: var(--text);
 }
 
-.toggleRow{
-  display:flex;
-  justify-content: space-between;
-  align-items:center;
-  gap: 14px;
-  padding: 10px 0;
-}
-.toggleText{ max-width: 70%; }
-.toggleLabel{ font-weight: 800; }
-.toggleHint{ margin-top: 4px; color: var(--muted); font-size: 12px; }
-
-.toggle{
-  width: 52px;
-  height: 30px;
-  border-radius: 999px;
-  background: rgba(255,255,255,.10);
-  border: 1px solid var(--border);
+/* ===== LIVE SNAPSHOT + ROI overlay ===== */
+.frameWrap{
   position: relative;
-  cursor: pointer;
-  transition: background .15s ease, border-color .15s ease;
+  width: 100%;
+  margin-top: 12px;
+  border-radius: var(--r-lg);
+  overflow:hidden;
+  border: 1px solid var(--border2);
+  background: rgba(0,0,0,.25);
 }
-.toggle.isOn{
-  background: rgba(90,140,255,.22);
-  border-color: rgba(90,140,255,.28);
-}
-.toggleKnob{
-  width: 24px;
-  height: 24px;
-  border-radius: 999px;
-  background: rgba(255,255,255,.92);
-  position:absolute;
-  top: 2px;
-  left: 2px;
-  transition: transform .15s ease;
-}
-.toggle.isOn .toggleKnob{ transform: translateX(22px); }
-
-.sliderRow{ padding: 12px 0; }
-.sliderTop{ display:flex; justify-content: space-between; gap: 10px; align-items: baseline; }
-.sliderValue{ font-weight: 900; color: rgba(255,255,255,.9); }
-.slider{ width: 100%; margin-top: 10px; }
-
-.footer{
-  margin-top: 14px;
-  padding: 10px 2px;
-}
-.badge-ok{
-  border-color: rgba(80,200,120,.35);
-  background: rgba(80,200,120,.12);
-}
-.badge-bad{
-  border-color: rgba(255,80,80,.35);
-  background: rgba(255,80,80,.10);
-}
-
-
-/* ===== LIVE SNAPSHOT + ROI overlay (v0.2.4-fix3) ===== */
-.frameWrap{ position: relative; width: 100%; margin-top: 12px; border-radius: var(--r-lg); overflow:hidden; border: 1px solid var(--border2); background: rgba(0,0,0,.25); }
 .frameImg{ display:block; width: 100%; height: auto; }
 .frameOverlay{ position:absolute; inset:0; width:100%; height:100%; }
+
 .roiPoly{ fill: rgba(90,140,255,.14); stroke: rgba(90,140,255,.9); stroke-width:0.9; }
 .roiLine{ fill:none; stroke: rgba(90,140,255,.7); stroke-width:0.8; }
 .roiPt{ fill: rgba(90,140,255,.95); stroke: rgba(0,0,0,.6); stroke-width:0.4; }
 
 /* YOLO boxes */
 .yoloBox{ fill: rgba(255,200,80,.08); stroke: rgba(255,200,80,.95); stroke-width:0.9; }
-.input{ width: 320px; max-width: 100%; padding: 10px 12px; border-radius: 12px; border: 1px solid var(--border2); background: rgba(255,255,255,.05); color: var(--text); }
-.table{ width:100%; border-collapse: collapse; }
-.table th{ text-align:left; font-size: 12px; letter-spacing:.3px; color: var(--muted); padding: 12px 14px; border-bottom: 1px solid var(--border2); background: rgba(255,255,255,.03); }
-.table td{ padding: 12px 14px; border-bottom: 1px solid rgba(255,255,255,.05); }
 
-
-/* ===== QuickSetup additions (v0.2.5) ===== */
 .roiBox{
   position:absolute;
   border: 2px solid rgba(90,140,255,.95);
@@ -337,76 +291,11 @@ body{
   box-shadow: 0 0 0 1px rgba(0,0,0,.25) inset;
 }
 
-/* simple list for whitelist */
-.list{ display:flex; flex-direction:column; gap: 10px; }
-.listRow{
-  display:flex;
-  align-items:center;
-  justify-content: space-between;
-  gap: 12px;
-  padding: 10px 12px;
-  border: 1px solid var(--border2);
-  border-radius: 14px;
-  background: rgba(255,255,255,.04);
-}
-/* ===== System tab polish (v0.2.5-fix1) ===== */
-.content{ margin-top: 14px; }
-
+/* ===== SYSTEM / KV ===== */
 .systemWrap{ display:flex; flex-direction:column; gap: 14px; }
-
-.sysStatusGrid{ display:grid; grid-template-columns: 1fr; gap: 12px; }
-.sysStatusItem{
-  padding: 12px 12px;
-  border-radius: var(--r-md);
-  background: rgba(255,255,255,.03);
-  border: 1px solid rgba(255,255,255,.07);
-}
-.sysLabel{ font-weight: 900; letter-spacing: .2px; }
-.sysRight{ margin-top: 8px; }
-.sysHint{ margin-top: 8px; font-size: 12px; }
-
 .sysActions{ display:flex; gap: 10px; flex-wrap: wrap; }
 .systemDivider{ height: 1px; margin: 14px 0; background: rgba(255,255,255,.08); }
 
-.dangerZone{
-  border-radius: var(--r-lg);
-  border: 1px solid rgba(255,80,80,.22);
-  background: rgba(255,80,80,.06);
-  padding: 12px;
-}
-.dangerTitle{ font-weight: 900; }
-.dangerBtns .btn{ border-color: rgba(255,80,80,.26); }
-
-.kvGrid{
-  margin-top: 10px;
-  display:grid;
-  grid-template-columns: 1fr 1fr;
-  gap: 10px;
-}
-@media (max-width: 980px){
-  .kvGrid{ grid-template-columns: 1fr; }
-}
-.kv{
-  padding: 10px 10px;
-  border-radius: 14px;
-  border: 1px solid rgba(255,255,255,.07);
-  background: rgba(0,0,0,.12);
-}
-.kvK{ font-size: 12px; color: var(--muted); letter-spacing: .02em; }
-.kvV{ margin-top: 6px; font-weight: 800; }
-
-.logBox{
-  margin: 0;
-  padding: 12px;
-  border-radius: var(--r-md);
-  border: 1px solid rgba(255,255,255,.08);
-  background: rgba(0,0,0,.28);
-  max-height: 320px;
-  overflow: auto;
-  font-size: 12px;
-  line-height: 1.35;
-}
-/* ===== System kv grid (v0.3.2) ===== */
 .kvGrid{
   display:grid;
   grid-template-columns: 1fr 1fr;
@@ -415,6 +304,7 @@ body{
 @media (max-width: 980px){
   .kvGrid{ grid-template-columns: 1fr; }
 }
+
 .kv{
   padding: 10px 12px;
   border: 1px solid var(--border2);
@@ -428,6 +318,16 @@ body{
   color: var(--muted);
   margin-bottom: 6px;
 }
-.kvV{
-  font-weight: 800;
+.kvV{ font-weight: 800; }
+
+.logBox{
+  margin: 0;
+  padding: 12px;
+  border-radius: var(--r-md);
+  border: 1px solid rgba(255,255,255,.08);
+  background: rgba(0,0,0,.28);
+  max-height: 320px;
+  overflow: auto;
+  font-size: 12px;
+  line-height: 1.35;
 }

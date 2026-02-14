@@ -38,7 +38,9 @@ jobs:
           file: Dockerfile
           target: gatebox
           push: true
-          tags: ghcr.io/${{ github.repository_owner }}/lpr_gatebox-gatebox:${{ steps.meta.outputs.TAG }}
+          tags: |
+            ghcr.io/${{ github.repository_owner }}/lpr_gatebox-gatebox:${{ steps.meta.outputs.TAG }}
+            ghcr.io/${{ github.repository_owner }}/lpr_gatebox-gatebox:stable
 
       - name: Build & push rtsp_worker
         uses: docker/build-push-action@v6
@@ -47,7 +49,9 @@ jobs:
           file: Dockerfile
           target: rtsp_worker
           push: true
-          tags: ghcr.io/${{ github.repository_owner }}/lpr_gatebox-rtsp-worker:${{ steps.meta.outputs.TAG }}
+          tags: |
+            ghcr.io/${{ github.repository_owner }}/lpr_gatebox-rtsp-worker:${{ steps.meta.outputs.TAG }}
+            ghcr.io/${{ github.repository_owner }}/lpr_gatebox-rtsp-worker:stable
 
       - name: Build & push updater
         uses: docker/build-push-action@v6
@@ -55,4 +59,6 @@ jobs:
           context: .
           file: updater/Dockerfile
           push: true
-          tags: ghcr.io/${{ github.repository_owner }}/lpr_gatebox-updater:${{ steps.meta.outputs.TAG }}
+          tags: |
+            ghcr.io/${{ github.repository_owner }}/lpr_gatebox-updater:${{ steps.meta.outputs.TAG }}
+            ghcr.io/${{ github.repository_owner }}/lpr_gatebox-updater:stable

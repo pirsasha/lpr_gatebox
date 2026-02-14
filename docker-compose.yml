@@ -1,22 +1,38 @@
-#==========================================================
-# LPR_GATEBOX (продуктовый compose)
-#----------------------------------------------------------
-# Идея: gatebox = OCR/логика/whitelist/MQTT
-#       rtsp_worker = RTSP чтение/декод/YOLO/кроп/отправка в gatebox
+# ==========================================================
+# LPR_GATEBOX — продуктовый docker-compose
+# ==========================================================
 #
-# ВАЖНО:
-# - Переменные RTSP/FFmpeg/декодирования ДОЛЖНЫ быть только в rtsp_worker.
-# - Переменные OCR/warp/confirm/MQTT ДОЛЖНЫ быть только в gatebox.
-# - Чтобы gatebox публиковал MQTT (ok=True), ему нужно набрать CONFIRM_N
-#   в окне CONFIRM_WINDOW_SEC. Поэтому rtsp_worker должен слать один и тот же номер
-#   чаще, чем это окно: PLATE_RESEND_SEC < CONFIRM_WINDOW_SEC (обычно 0.3–0.6).
+# Архитектура (ВАЖНО понять один раз):
 #
-# POSTCROP:
-# - Делается ТОЛЬКО в gatebox (после OCR), чтобы чуть подрезать края и убрать рамку/шум.
-# - Если "съедает" символы/флаг/края — уменьши POSTCROP_LRBT или выключи POSTCROP=0.
-#==========================================================
+# 1) gatebox
+#    - получает JPEG с номером
+#    - делает OCR
+#    - крутит / warp'ит номер если надо
+#    - нормализует (латиница → кириллица)
+#    - проверяет формат РФ
+#    - стабилизирует номер (confirm)
+#    - проверяет whitelist
+#    - ПУБЛИКУЕТ MQTT, если ok=True
+#
+# 2) rtsp_worker
+#    - читает RTSP
+#    - декодирует видео
+#    - YOLO находит номер
+#    - вырезает номер (crop)
+#    - выпрямляет номер (rectify)
+#    - чуть уточняет рамку (refine)
+#    - отправляет JPEG в gatebox
+#
+# ❌ rtsp_worker НЕ делает OCR
+# ❌ gatebox НЕ знает про RTSP / YOLO
+#
+# ==========================================================
 
 services:
+
+  # ========================================================
+  # GATEBOX — мозг системы
+  # ========================================================
   gatebox:
     build:
       context: .
@@ -24,59 +40,80 @@ services:
     container_name: gatebox
     restart: unless-stopped
 
+    # FIX: gatebox должен видеть updater по DNS-имени "updater".
+    # У тебя updater сидел в updater_net, а gatebox — в default, поэтому "updater" не резолвился.
+    # Решение: подключаем gatebox к updater_net тоже.
+    networks:
+      - default
+      - updater_net
+
+    # Порт UI + API
     ports:
       - "8080:8080"
 
     environment:
+      # ---------------- Общая информация ----------------
       APP_VERSION: "0.3.0"
       GIT_SHA: "dev"
       BUILD_TIME: "2026-02-07T00:00:00+03:00"
-      # -------- Runtime --------
+
+      # Python сразу печатает логи (без буферов)
       PYTHONUNBUFFERED: "1"
 
-      # -------- Логи gatebox --------
-      DEBUG_LOG: "0"
-      PRINT_EVERY_RESPONSE: "0"
+      # ---------------- Логи ----------------
+      DEBUG_LOG: "1"               # подробные debug-логи
+      PRINT_EVERY_RESPONSE: "0"    # печатать каждый /infer ответ
 
-      # -------- OCR модель/настройки --------
-      MODEL_PATH: "/models/plate_ocr.onnx"
-      SETTINGS_PATH: "/config/settings.json"
-      ALPHABET: "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ"
+      # ---------------- OCR ----------------
+      MODEL_PATH: "/models/plate_ocr.onnx"      # OCR модель
+      SETTINGS_PATH: "/config/settings.json"    # настройки/параметры обработки (json)
+      # ALPHABET: "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ"
 
-      # -------- Принятие решения + MQTT --------
-      MIN_CONF: "0.80"
+      # ---------------- Логика принятия решения ----------------
+      MIN_CONF: "0.85"
       CONFIRM_N: "2"
       CONFIRM_WINDOW_SEC: "2.0"
       COOLDOWN_SEC: "15.0"
       WHITELIST_PATH: "/config/whitelist.json"
 
-      # -------- OCR повороты / warp (на стороне gatebox) --------
+      # ---------------- OCR улучшения ----------------
       OCR_ORIENT_TRY: "1"
       OCR_WARP_TRY: "1"
       OCR_WARP_W: "320"
       OCR_WARP_H: "96"
 
-      # -------- POSTCROP (ТОЛЬКО gatebox) --------
+      # ---------------- POSTCROP ----------------
       POSTCROP: "1"
-      # LEFT,RIGHT,TOP,BOTTOM (доли от размера)
-      POSTCROP_LRBT: "0.02,0.02,0.04,0.04"
+      # LEFT, RIGHT, TOP, BOTTOM
+      POSTCROP_LRBT: "0.02,0.02,0.05,0.05"
 
-      # -------- Проверка региона / стабилизация региона --------
+      # ---------------- Проверка региона РФ ----------------
       REGION_CHECK: "1"
       REGION_STAB: "1"
       REGION_STAB_WINDOW_SEC: "2.5"
       REGION_STAB_MIN_HITS: "3"
       REGION_STAB_MIN_RATIO: "0.60"
 
-      # -------- MQTT --------
+      # ---------------- MQTT ----------------
       MQTT_ENABLED: "1"
       MQTT_HOST: "192.168.2.102"
       MQTT_PORT: "1883"
       MQTT_USER: "pirsasha"
       MQTT_PASS: "Ps!628227!"
       MQTT_TOPIC: "gate/open"
-      #BOT_TG
+      UI_EVENTS_ONLY_RU: "1"
+      UI_EVENTS_RU_STRICT: "0"          # мягко: пропускает А898АА78 тоже
+      UI_EVENTS_INCLUDE_DENIED: "1"     # not_in_whitelist показываем
+      UI_EVENTS_INCLUDE_INVALID: "0"    # invalid скрываем (мусор)
+      UI_I18N_RU: "1"                   # русские статусы/сообщения
+
+      # ---------------- Telegram ----------------
       TELEGRAM_BOT_TOKEN: "8580546225:AAH2_pLVlzXM0YgLd8Dfg9GkzOid_Txg348"
+
+      # FIX: раньше UPDATER_URL был пустой. Лучше всегда задавать явно.
+      # Важно: работает только если gatebox и updater в общей сети (см. networks выше).
+      UPDATER_URL: "http://updater:9010"
+
     volumes:
       - ./models:/models:ro
       - ./config:/config
@@ -93,6 +130,10 @@ services:
       timeout: 3s
       retries: 10
 
+
+  # ========================================================
+  # RTSP_WORKER — видео + YOLO
+  # ========================================================
   rtsp_worker:
     build:
       context: .
@@ -103,87 +144,175 @@ services:
     depends_on:
       - gatebox
 
+    # (не обязательно) rtsp_worker может оставаться только в default,
+    # ему не нужен доступ к updater.
+    networks:
+      - default
+
     environment:
-      # -------- Runtime --------
+      # --- AUTO MODE ---
+      # Авто-переключение day/night + автотюнинг (pad/rectify/upscale).
+      # Если в коде авто-режим ещё не включен — параметры безопасно игнорируются.
+      AUTO_MODE: "0"
+      AUTO_EVERY_N: "3"
+      AUTO_LUMA_DAY: "95"
+      AUTO_LUMA_NIGHT: "65"
+      AUTO_HYST_SEC: "2.0"
+      AUTO_SAT_GLARE: "0.10"
+      AUTO_BLUR_MIN: "35.0"
+      AUTO_DROP_ON_BLUR: "1"
+      AUTO_DROP_ON_GLARE: "1"
+
+      AUTO_RECTIFY: "1"
+      AUTO_PAD_ENABLE: "1"
+      AUTO_UPSCALE_ENABLE: "1"
+
+      AUTO_UPSCALE_DAY_W: "480"
+      AUTO_UPSCALE_DAY_H: "144"
+      AUTO_UPSCALE_NIGHT_W: "720"
+      AUTO_UPSCALE_NIGHT_H: "224"
+      AUTO_METRICS_SOURCE: roi
+      AUTO_METRICS_DOWNSCALE_W: "320"
+      DESKEW_ENABLE: "0"
+      DESKEW_MAX_ANGLE_DEG: "12"
+      DESKEW_MIN_ANGLE_DEG: "1"
+      # ---------------- Runtime ----------------
       PYTHONPATH: "/work"
       PYTHONUNBUFFERED: "1"
 
-      # -------- Логи worker --------
+      # ---------------- Логи ----------------
       WORKER_DEBUG: "0"
 
-      # -------- LIVE preview для UI --------
+      # ---------------- LIVE preview ----------------
       LIVE_DIR: "/config/live"
       LIVE_EVERY_SEC: "2.0"
-      LIVE_DRAW_YOLO: "0"
+      LIVE_DRAW_YOLO: "1"
+      # NEW: сохранять quad в live boxes.json (полезно для диагностики геометрии)
+      LIVE_SAVE_QUAD: "1"
+      # NEW: качество JPEG для live-превью (чтобы UI был легче/быстрее)
+      LIVE_JPEG_QUALITY: "85"
 
-      # -------- RTSP --------
-      RTSP_URL: "rtsp://192.168.2.102:8554/vorota"
-      RTSP_FPS: "1.0"
+      # ---------------- RTSP ----------------
+      RTSP_URL: "rtsp://192.168.2.102:8554/lpr"
+      RTSP_FPS: "1.0"            # legacy/совместимость
 
-      READ_FPS: "12"
+      # Частоты:
+      READ_FPS: "15"
       DET_FPS: "2"
-      SEND_FPS: "1.5"
+      SEND_FPS: "2.5"
 
       INFER_URL: "http://gatebox:8080/infer"
 
-      # ROI (пусто = весь кадр)
-      ROI: ""
+      # ---------------- ROI ----------------
+      ROI: ""                    # пусто = весь кадр
 
-      # -------- YOLO детектор номера --------
+      # ---------------- YOLO ----------------
       DET_MODEL_PATH: "/models/license-plate-finetune-v1s.pt"
-      DET_CONF: "0.40"
+      DET_CONF: "0.35"
       DET_IOU: "0.45"
       DET_IMG_SIZE: "416"
 
-      # -------- Crop / подготовка к OCR --------
+      # ---------------- Crop ----------------
+      # legacy (оставляем для совместимости)
       PLATE_PAD: "0.14"
+
+      # NEW: adaptive pad (если включён в коде/настройках)
+      PLATE_PAD_BASE: "0.07"
+      PLATE_PAD_SMALL: "0.12"
+      PLATE_PAD_SMALL_W: "260"
+      PLATE_PAD_SMALL_H: "85"
+      PLATE_PAD_MAX: "0.16"
+
       OCR_CROP_MODE: "yolo"
       SEND_ON_NO_DET: "0"
 
-      # -------- Rectify (worker) --------
+      # ---------------- Rectify ----------------
       RECTIFY: "1"
       RECTIFY_W: "320"
       RECTIFY_H: "96"
 
-      # -------- Refine --------
-      REFINE_INNER_PAD: "0.02"
-      REFINE_MIN_AREA_RATIO: "0.02"
+      # ---------------- Refine ----------------
+      REFINE_INNER_PAD: "0.06"
+      REFINE_MIN_AREA_RATIO: "0.03"
 
-      # -------- Отправка (HTTP) --------
-      JPEG_QUALITY: "85"
+      # ---------------- HTTP ----------------
+      JPEG_QUALITY: "94"
       HTTP_TIMEOUT_SEC: "2.0"
 
-      # -------- Событийная логика worker --------
+      # ---------------- Upscale before OCR (rtsp_worker) ----------------
+      UPSCALE_ENABLE: "1"
+      UPSCALE_MIN_W: "720"
+      UPSCALE_MIN_H: "224"
+      # NEW: форензика — сохранять send_*.jpg.bytes (байты ровно того JPEG, что улетел в gatebox)
+      SAVE_SEND_BYTES: "0"
+
+      # ---------------- Логика событий ----------------
       EVENT_MODE: "on_plate_change"
       GLOBAL_SEND_MIN_INTERVAL_SEC: "0.5"
-
-      # Повторная отправка одного и того же номера (для confirm в gatebox)
       PLATE_RESEND_SEC: "0.4"
-
-      # Предподтверждение на стороне worker (уменьшает мусор)
       PLATE_CONFIRM_K: "2"
       PLATE_CONFIRM_WINDOW_SEC: "1.8"
 
-      # -------- Tracking --------
+      # ---------------- Tracking ----------------
       TRACK_ENABLE: "1"
       TRACK_HOLD_SEC: "1.0"
       TRACK_ALPHA: "0.65"
       TRACK_IOU_MIN: "0.12"
 
-      MIN_PLATE_W: "120"
-      MIN_PLATE_H: "30"
+      # ---------------- Sanity gate (до OCR) ----------------
+      MIN_PLATE_W: "80"
+      MIN_PLATE_H: "20"
 
-      # -------- Freeze detector --------
+      # ---------------- Защита от зависаний ----------------
       FREEZE_ENABLE: "0"
 
-      # -------- Debug/сохранения --------
+      # NEW: параметры watchdog (если FREEZE_ENABLE=1)
+      FREEZE_DIFF_MEAN_THR: "0.35"
+      FREEZE_MAX_SEC: "3.0"
+      FREEZE_EVERY_N: "3"
+
+      # ---------------- Debug ----------------
       SAVE_DIR: "/debug"
       SAVE_EVERY: "0"
       SAVE_FULL_FRAME: "0"
       SAVE_WITH_ROI: "0"
       LOG_EVERY_SEC: "5"
 
-      # -------- FFmpeg/OpenCV тюнинг для RTSP --------
+      # ======================================================
+      # NEW: Camera settings poll + heartbeat (UI/диагностика)
+      # ======================================================
+      CAMERA_ID: "cam1"                 # id камеры (видно в heartbeat/meta)
+      HB_EVERY_SEC: "1.0"               # частота heartbeat
+      # HEARTBEAT_URL: ""               # можно не задавать: вычисляется от INFER_URL -> /api/rtsp/heartbeat
+      SETTINGS_BASE_URL: "http://gatebox:8080"
+      SETTINGS_POLL_SEC: "1.5"
+
+      # ======================================================
+      # NEW: Capture backend auto/ffmpeg параметры
+      # ======================================================
+      CAPTURE_BACKEND: "auto"           # auto/opencv/ffmpeg
+      FFMPEG_PROBE: "0"                 # 1=ffprobe для размера (обычно 0)
+      FFMPEG_THREADS: "1"
+      FFMPEG_READ_TIMEOUT_SEC: "2.0"
+
+      AUTO_SWITCH_CHECK_SEC: "1.0"
+      AUTO_SWITCH_AGE_MS: "300"
+      AUTO_SWITCH_STREAK: "5"
+      AUTO_SWITCH_COOLDOWN_SEC: "15.0"
+
+      # NEW: RTSP low-latency опции (используются и в OpenCV, и в ffmpeg)
+      RTSP_TRANSPORT: "tcp"             # tcp/udp
+      RTSP_OPEN_TIMEOUT_MS: "8000"
+      RTSP_READ_TIMEOUT_MS: "30000"
+      RTSP_DRAIN_GRABS: "2"
+
+      # ======================================================
+      # NEW: Auto day/night preproc (если в коде включено)
+      # ======================================================
+      AUTO_PREPROC_ENABLE: "0"
+
+      # ---------------- FFmpeg ----------------
+      # Параметры OpenCV/FFmpeg для снижения задержки и избежания буферизации RTSP
       OPENCV_FFMPEG_CAPTURE_OPTIONS: "rtsp_transport;tcp|stimeout;8000000|rw_timeout;30000000|fflags;nobuffer|flags;low_delay|max_delay;0|probesize;32000|analyzeduration;0"
 
     volumes:
@@ -192,9 +321,14 @@ services:
       - ./config:/config
       - ./debug_test:/work/debug_test
       - ./test_images:/work/test_images:ro
+      - ./videos:/work/videos
+      - ./dataset_pose_via:/work/dataset_pose_via
+    command: ["python", "-m", "app.rtsp_worker"]
 
-    command: ["python", "app/rtsp_worker.py"]
 
+  # ========================================================
+  # UPDATER — автообновление контейнеров
+  # ========================================================
   updater:
     image: lpr_gatebox-updater
     build:
@@ -202,10 +336,39 @@ services:
       dockerfile: updater/Dockerfile
     container_name: updater
     restart: unless-stopped
+
+    ports:
+      - "9010:9010"
+
+    # updater живёт в отдельной сети (это ок), но теперь gatebox тоже подключён к ней.
+    networks:
+      - updater_net
+
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
       - .:/project
       - ./config:/config
+
     environment:
-      PROJECT_DIR: /project
-      COMPOSE_FILE: docker-compose.yml
+      PROJECT_DIR: "/project"
+      COMPOSE_FILE: "/project/docker-compose.yml"
+      COMPOSE_PROJECT_NAME: "lpr_gatebox"
+      UPDATE_SERVICES: "gatebox,rtsp_worker"
+      HEALTH_URL: "http://host.docker.internal:8080/api/v1/health"
+      HEALTH_TIMEOUT_SEC: "60"
+
+
+# ==========================================================
+# Networks
+# ==========================================================
+networks:
+  default:
+    name: lpr_gatebox_default
+    driver: bridge
+    enable_ipv6: false
+
+  # FIX: раньше updater_net был external:true и updater сидел в ней один.
+  # Это нормально, но тогда gatebox обязан быть в этой сети тоже (см. gatebox.networks).
+  updater_net:
+    name: lpr_gatebox_updater_net
+    external: true

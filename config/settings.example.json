@@ -1,49 +1,16 @@
-"mqtt": {
-  "enabled": true,
-  "host": "192.168.2.102",
-  "port": 1883,
-  "user": "CHANGE_ME",
-  "pass": "CHANGE_ME",
-  "topic": "gate/open"
-},
-  "gate": {
-    "min_conf": 0.8,
+{
+  "ocr": {
+    "ocr_orient_try": 1,
+    "ocr_warp_try": 1,
+    "ocr_warp_w": 320,
+    "ocr_warp_h": 96,
+    "postcrop": 1,
+    "postcrop_lrbt": "0.040,0.040,0.080,0.080",
+    "min_conf": 0.78,
     "confirm_n": 2,
-    "confirm_window_sec": 2.0,
-    "cooldown_sec": 15.0,
-    "whitelist_path": "/config/whitelist.json",
-    "region_check": true,
-    "region_stab": true,
-    "region_stab_window_sec": 2.5,
-    "region_stab_min_hits": 3,
-    "region_stab_min_ratio": 0.6
+    "confirm_window_sec": 2.0
   },
-  "ui": {
-    "events_max": 200
-  },
-  "settings": {
-    "gate": {
-      "min_conf": 0.8,
-      "confirm_n": 2,
-      "confirm_window_sec": 2.0,
-      "cooldown_sec": 15.0,
-      "whitelist_path": "/config/whitelist.json",
-      "region_check": true,
-      "region_stab": true,
-      "region_stab_window_sec": 2.5,
-      "region_stab_min_hits": 3,
-      "region_stab_min_ratio": 0.6
-    },
-    "ui": {
-      "events_max": 200
-    },
-    "mqtt": {
-      "port": 1883,
-      "host": "192.168.2.102",
-      "pass": "",
-      "topic": "gate/open",
-      "user": "pirsasha",
-      "enabled": true
-    }
+  "runtime": {
+    "debug_log": 0
   }
 }

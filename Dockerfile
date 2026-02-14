@@ -23,7 +23,7 @@ FROM base AS deps
 COPY requirements.txt /work/requirements.txt
 
 # 1) CPU torch/torchvision отдельно (чтобы не получить cu12)
-# 2) остальные зависимости с deps (urllib3 подтянется для requests)
+# 2) остальные зависимости с deps
 RUN --mount=type=cache,target=/root/.cache/pip \
     python -m pip install -U pip setuptools wheel && \
     python -m pip install --index-url https://download.pytorch.org/whl/cpu \
@@ -46,14 +46,20 @@ COPY ui/ /ui/
 RUN npm run build
 
 
-# ---- gatebox runtime ----
+# =========================================================
+# gatebox runtime
+# =========================================================
 FROM base AS gatebox
 WORKDIR /app
 
 COPY --from=deps /usr/local /usr/local
 
-# Кладём backend + UI туда, где FastAPI его ждёт
+# backend
 COPY app /app/app
+
+# ВАЖНО: всегда кладём свежий UI build в static
+# FastAPI раздаёт /app/app/static
+COPY --from=ui_build /ui/dist /app/app/static
 
 EXPOSE 8080
 CMD ["python", "-m", "uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8080"]
@@ -65,4 +71,6 @@ CMD ["python", "-m", "uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "
 FROM base AS rtsp_worker
 COPY --from=deps /usr/local /usr/local
 COPY app /work/app
-CMD ["python", "app/rtsp_worker.py"]
+
+WORKDIR /work
+CMD ["python", "-m", "app.rtsp_worker"]

@@ -49,6 +49,25 @@ export default function SettingsPage() {
     setDirty(true);
   };
 
+  // Удобная ссылка на overrides rtsp_worker (параметры, которые worker подхватывает по poll).
+  const rtspOverrides = settings?.rtsp_worker?.overrides || {};
+
+  // Быстрое включение/выключение форензики/шумных логов.
+  const debugEnabled =
+    Number(rtspOverrides.SAVE_EVERY || 0) > 0 ||
+    Number(rtspOverrides.SAVE_FULL_FRAME || 0) > 0 ||
+    Number(rtspOverrides.SAVE_WITH_ROI || 0) > 0 ||
+    Number(rtspOverrides.LOG_EVERY_SEC || 0) > 0;
+
+  const setDebugEnabled = (on: boolean) => {
+    // SAVE_DIR оставляем, чтобы путь не терялся.
+    patch("rtsp_worker.overrides.SAVE_DIR", rtspOverrides.SAVE_DIR || "/debug");
+    patch("rtsp_worker.overrides.SAVE_EVERY", on ? 1 : 0);
+    patch("rtsp_worker.overrides.SAVE_FULL_FRAME", on ? 1 : 0);
+    patch("rtsp_worker.overrides.SAVE_WITH_ROI", on ? 1 : 0);
+    patch("rtsp_worker.overrides.LOG_EVERY_SEC", on ? 5 : 0);
+  };
+
   const onSave = async () => {
     try {
       const r = await putSettings(settings);
@@ -160,8 +179,82 @@ export default function SettingsPage() {
             </div>
           </div>
 
+          <div className="grid2" style={{ marginTop: 12 }}>
+            <div className="card">
+              <div className="cardHead"><div className="cardTitle">Камера</div></div>
+              <div className="cardBody">
+                <div className="row">
+                  <label className="muted" style={{ width: 140 }}>enabled</label>
+                  <input
+                    type="checkbox"
+                    checked={!!settings?.camera?.enabled}
+                    onChange={(e)=>patch("camera.enabled", e.target.checked)}
+                  />
+                </div>
+                <div className="row">
+                  <label className="muted" style={{ width: 140 }}>rtsp_url</label>
+                  <input
+                    className="input mono"
+                    value={settings?.camera?.rtsp_url || ""}
+                    onChange={(e)=>patch("camera.rtsp_url", e.target.value)}
+                    placeholder="rtsp://..."
+                  />
+                </div>
+                <div className="hint muted" style={{ marginTop: 8 }}>
+                  Эти поля читает <span className="mono">rtsp_worker</span> автоматически (poll раз в 1–2 сек). Для них <span className="mono">Применить</span> не нужен.
+                </div>
+              </div>
+            </div>
+
+            <div className="card">
+              <div className="cardHead"><div className="cardTitle">RTSP worker — тюнинг</div></div>
+              <div className="cardBody">
+                <div className="row">
+                  <label className="muted" style={{ width: 180 }}>DET_CONF</label>
+                  <input className="input mono" value={String(settings?.rtsp_worker?.overrides?.DET_CONF ?? "")} onChange={(e)=>patch("rtsp_worker.overrides.DET_CONF", Number(e.target.value || 0))} />
+                </div>
+                <div className="row">
+                  <label className="muted" style={{ width: 180 }}>PLATE_PAD_BASE</label>
+                  <input className="input mono" value={String(settings?.rtsp_worker?.overrides?.PLATE_PAD_BASE ?? "")} onChange={(e)=>patch("rtsp_worker.overrides.PLATE_PAD_BASE", Number(e.target.value || 0))} />
+                </div>
+                <div className="row">
+                  <label className="muted" style={{ width: 180 }}>PLATE_PAD_SMALL</label>
+                  <input className="input mono" value={String(settings?.rtsp_worker?.overrides?.PLATE_PAD_SMALL ?? "")} onChange={(e)=>patch("rtsp_worker.overrides.PLATE_PAD_SMALL", Number(e.target.value || 0))} />
+                </div>
+                <div className="row">
+                  <label className="muted" style={{ width: 180 }}>POSTCROP_LRBT (gatebox)</label>
+                  <input className="input mono" value={String(settings?.ocr?.postcrop_lrbt ?? "")} onChange={(e)=>patch("ocr.postcrop_lrbt", e.target.value)} placeholder="0.04,0.04,0.08,0.08" />
+                </div>
+                <div className="hint muted" style={{ marginTop: 8 }}>
+                  Важно: тюнинг rtsp_worker применяется автоматически (poll). Некоторые параметры (например DET_CONF/DET_IMG_SIZE) могут требовать 1–2 секунды и пересоздание детектора.
+                </div>
+
+                <div style={{ height: 12 }} />
+                <div className="hint muted">
+                  <b>Отладка</b>: одной кнопкой включить/выключить сохранение кадров/кропов и периодические "alive" логи.
+                </div>
+
+                <div className="row" style={{ marginTop: 8 }}>
+                  <label className="muted" style={{ width: 180 }}>Отладка</label>
+                  <label className="checkbox">
+                    <input
+                      type="checkbox"
+                      checked={debugEnabled}
+                      onChange={(e) => setDebugEnabled(e.target.checked)}
+                    />
+                    <span>Включить (сохранять в /debug)</span>
+                  </label>
+                </div>
+
+                <div className="hint muted" style={{ marginTop: 8 }}>
+                  Что делает: <span className="mono">SAVE_EVERY</span> (каждый N-й отправленный кадр), <span className="mono">SAVE_FULL_FRAME</span> (полный кадр), <span className="mono">SAVE_WITH_ROI</span> (кадр+ROI), <span className="mono">LOG_EVERY_SEC</span> (alive-лог раз в N секунд).
+                </div>
+              </div>
+            </div>
+          </div>
+
           <div className="hint muted">
-            Логика: сначала <span className="mono">Сохранить</span> (пишем settings.json), потом <span className="mono">Применить</span> (перечитываем и обновляем gate/mqtt в runtime).
+            Логика: сначала <span className="mono">Сохранить</span> (пишем settings.json), потом <span className="mono">Применить</span> (перечитываем и обновляем gate/mqtt в runtime). <span className="mono">rtsp_worker</span> подхватывает camera/rtsp_worker из settings автоматически.
           </div>
         </div>
       </div>

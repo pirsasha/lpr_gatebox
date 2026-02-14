@@ -1,0 +1,23 @@
+{
+  "ts": 1770654824,
+  "project": "lpr_gatebox",
+  "compose_file": "/project/docker-compose.yml",
+  "compose_effective": "/tmp/docker-compose.effective.yml",
+  "compose_effective_persist": "/project/.updater/docker-compose.effective.yml",
+  "services": {
+    "gatebox": {
+      "container_id": "6949712753fcd967cf1eb04caab96238e15c348f001337bcad93e47566b80e42",
+      "image_id": "d00fa4337bc7f7e29d7c4428b8e0b38efc546a7204ec35830dbbacf7533c95ac",
+      "image_ref": null,
+      "repo_digests": [],
+      "repo_tags": []
+    },
+    "rtsp_worker": {
+      "container_id": "9b13e48a52de5b4d5aecc7f4c0db0eb0a2b7e411917196c098e5273b857da028",
+      "image_id": "a4fa9202913d78b64c8757abdd63deffa4639050c21b5de50b87144fcd3edce0",
+      "image_ref": null,
+      "repo_digests": [],
+      "repo_tags": []
+    }
+  }
+}

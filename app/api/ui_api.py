@@ -1,12 +1,20 @@
 # =========================================================
 # Файл: app/api/ui_api.py
 # Проект: LPR GateBox
-# Версия: v0.3.2
-# Изменено: 2026-02-07  (UTC+3)
-# Автор: Александр
+# Версия: v0.3.9-ui-events-filter+ru-i18n
+# Изменено: 2026-02-11 (UTC+3)
+# Автор: Александр + ChatGPT
+#
 # Что сделано:
-# - CHG: router без prefix (prefix задаёт main.py: /api и /api/v1)
-# - NEW: SSE stream /events/stream для "как у взрослых" (без кнопок обновить)
+# - NEW: UI-фильтр событий (скрываем OCR-мусор, показываем только РФ/похожие номера)
+# - NEW: ENV-переключатели фильтра:
+#        UI_EVENTS_ONLY_RU=1
+#        UI_EVENTS_RU_STRICT=0
+#        UI_EVENTS_INCLUDE_DENIED=1
+#        UI_EVENTS_INCLUDE_INVALID=0
+# - NEW: русификация сообщений/статусов в UI (UI_I18N_RU=1)
+# - CHG: push_event_from_infer() теперь может "молча" не добавлять мусор в EventStore
+# - НЕ ЛОМАЕМ контракт: /api/... и /api/v1/... работают одинаково (router без prefix)
 # =========================================================
 
 from __future__ import annotations
@@ -16,42 +24,131 @@ import time
 import json
 import copy
 import asyncio
-import requests  # NEW
+import re
 from pathlib import Path
 from typing import Any, Callable, Dict, Optional, Tuple
 
-from fastapi import APIRouter, HTTPException, Request
-from fastapi.responses import FileResponse, StreamingResponse
+import requests
 from pydantic import BaseModel
+from fastapi import APIRouter, HTTPException, Request
+from fastapi.responses import FileResponse, StreamingResponse, Response
 
 from app.store import EventStore, EventItem, SettingsStore
-from fastapi.responses import Response
-from fastapi import HTTPException
-# ВАЖНО: без prefix. Префиксы вешаем в main.py через include_router(..., prefix="/api") и "/api/v1"
+
+# ВАЖНО: без prefix. Префиксы вешаем в main.py:
+# app.include_router(ui_router, prefix="/api")
+# app.include_router(ui_router, prefix="/api/v1")
 router = APIRouter(tags=["ui"])
+
 # =========================
 # UPDATER proxy (metrics/update)
 # =========================
 
-
 UPDATER_URL = os.environ.get("UPDATER_URL", "http://updater:9010")
+UPDATER_TIMEOUT_SEC = float(os.environ.get("UPDATER_TIMEOUT_SEC", "8.0"))
+
+
+def _updater_get(path: str) -> requests.Response:
+    return requests.get(f"{UPDATER_URL}{path}", timeout=UPDATER_TIMEOUT_SEC)
+
+
+def _updater_post(path: str) -> requests.Response:
+    return requests.post(f"{UPDATER_URL}{path}", timeout=UPDATER_TIMEOUT_SEC)
 
 
 @router.get("/system/metrics")
 def system_metrics():
     """
-    UI -> gatebox -> updater
-    Метрики хоста/контейнеров для вкладки "Система".
+    Метрики для UI "Система -> Ресурсы".
+
+    FIX: updater в текущей версии НЕ имеет /metrics (404), и это не должно ломать UI.
+    Поэтому 404 => 200 + {ok:false, supported:false}. Реальная недоступность updater => 502.
     """
+    url = f"{UPDATER_URL}/metrics"
     try:
-        r = requests.get(f"{UPDATER_URL}/metrics", timeout=8.0)
+        r = requests.get(url, timeout=6.0)
+
+        # FIX: /metrics не поддерживается этим updater (у тебя BaseHTTPServer, есть только /status и /log)
+        if r.status_code == 404:
+            return {
+                "ok": False,
+                "supported": False,
+                "error": "metrics_not_supported",
+                "updater_url": UPDATER_URL,
+                "hint": "updater supports only /status and /log in this build",
+            }
+
+        r.raise_for_status()
+
+        # на будущее: если появится /metrics и он будет JSON
+        try:
+            return r.json()
+        except Exception:
+            return {"ok": True, "raw": r.text}
+
+    except requests.RequestException as e:
+        raise HTTPException(status_code=502, detail=f"updater unavailable: {e}")
+
+
+@router.get("/update/status")
+def update_status():
+    try:
+        r = _updater_get("/status")
         r.raise_for_status()
         return r.json()
     except requests.RequestException as e:
         raise HTTPException(status_code=502, detail=f"updater unavailable: {e}")
+
+
+@router.get("/update/log")
+def update_log():
+    try:
+        r = _updater_get("/log")
+        r.raise_for_status()
+        return r.json()
+    except requests.RequestException as e:
+        raise HTTPException(status_code=502, detail=f"updater unavailable: {e}")
+
+
+@router.post("/update/check")
+def update_check():
+    try:
+        r = _updater_post("/check")
+        r.raise_for_status()
+        return r.json()
+    except requests.RequestException as e:
+        raise HTTPException(status_code=502, detail=f"updater unavailable: {e}")
+
+
+@router.post("/update/start")
+def update_start():
+    try:
+        r = _updater_post("/start")
+        r.raise_for_status()
+        return r.json()
+    except requests.RequestException as e:
+        raise HTTPException(status_code=502, detail=f"updater unavailable: {e}")
+
+
+@router.get("/update/report")
+def update_report():
+    """Проксируем zip отчёт от updater."""
+    try:
+        r = _updater_get("/report")
+        r.raise_for_status()
+        return Response(
+            content=r.content,
+            media_type="application/zip",
+            headers={"Content-Disposition": 'attachment; filename="gatebox_report.zip"'},
+        )
+    except requests.RequestException as e:
+        raise HTTPException(status_code=502, detail=f"updater unavailable: {e}")
+
+
 # =========================
 # LIVE кадр/боксы (пишет rtsp_worker в /config/live)
 # =========================
+
 LIVE_DIR = Path(os.environ.get("LIVE_DIR", "/config/live"))
 LIVE_FRAME_PATH = LIVE_DIR / "frame.jpg"
 LIVE_META_PATH = LIVE_DIR / "meta.json"
@@ -67,11 +164,75 @@ def _read_json(path: Path, default: Dict[str, Any]) -> Dict[str, Any]:
         return default
 
 
+@router.get("/rtsp/frame.jpg")
+def api_rtsp_frame_jpg():
+    """Возвращает самый свежий кадр (JPG), который пишет rtsp_worker."""
+    if not LIVE_FRAME_PATH.exists():
+        raise HTTPException(status_code=404, detail="no frame yet")
+    return FileResponse(str(LIVE_FRAME_PATH), media_type="image/jpeg")
+
+
+@router.get("/rtsp/frame_meta")
+def api_rtsp_frame_meta():
+    """Метаданные кадра (ts,w,h)."""
+    return {"ok": True, "meta": _read_json(LIVE_META_PATH, {"ts": 0})}
+
+
+@router.get("/rtsp/boxes")
+def api_rtsp_boxes():
+    """BBox от YOLO для отрисовки на UI."""
+    return {"ok": True, "boxes": _read_json(LIVE_BOXES_PATH, {"ts": 0, "items": []})}
+
+
 # =========================
 # EVENTS (единое хранилище)
 # =========================
+
 EVENTS_MAX = int(os.environ.get("EVENTS_MAX", "200"))
 _event_store = EventStore(maxlen=EVENTS_MAX)
+
+# NEW: UI filter switches (по умолчанию включаем чистку мусора)
+UI_EVENTS_ONLY_RU = os.environ.get("UI_EVENTS_ONLY_RU", "1").strip().lower() in ("1", "true", "yes", "y", "on")
+UI_EVENTS_RU_STRICT = os.environ.get("UI_EVENTS_RU_STRICT", "0").strip().lower() in ("1", "true", "yes", "y", "on")
+UI_EVENTS_INCLUDE_DENIED = os.environ.get("UI_EVENTS_INCLUDE_DENIED", "1").strip().lower() in ("1", "true", "yes", "y", "on")
+UI_EVENTS_INCLUDE_INVALID = os.environ.get("UI_EVENTS_INCLUDE_INVALID", "0").strip().lower() in ("1", "true", "yes", "y", "on")
+
+# NEW: RU i18n for UI messages
+UI_I18N_RU = os.environ.get("UI_I18N_RU", "1").strip().lower() in ("1", "true", "yes", "y", "on")
+
+# NEW: RU plate patterns
+_RU_LETTERS = "АВЕКМНОРСТУХ"
+_RE_RU_STRICT = re.compile(rf"^[{_RU_LETTERS}]\d{{3}}[{_RU_LETTERS}]{{2}}\d{{2,3}}$")
+_RE_RU_LOOSE = re.compile(rf"^[{_RU_LETTERS}]\d{{2,3}}[{_RU_LETTERS}]{{1,2}}\d{{0,3}}$")
+
+# NEW: RU translations (UI layer only)
+_RU_REASON_MAP: Dict[str, str] = {
+    # gatebox reasons
+    "not_in_whitelist": "Нет в белом списке",
+    "invalid_format_or_region": "Неверный формат/регион",
+    "invalid_format": "Неверный формат",
+    "invalid_region": "Неверный регион",
+    "not_enough_hits": "Недостаточно подтверждений",
+    "confirmed_but_not_allowed": "Подтверждено, но не разрешено",
+    "no_loose_match": "Не похоже на номер РФ",
+    "ocr_failed": "OCR не смог распознать",
+    "noise_ocr": "OCR-мусор (отфильтровано)",
+    "http_error": "Ошибка отправки в gatebox",
+    # worker / misc
+    "invalid": "Неверно",
+    "denied": "Запрещено",
+    "sent": "Отправлено",
+    "ok": "ОК",
+}
+
+
+_RU_STATUS_MAP: Dict[str, str] = {
+    "sent": "ОТПРАВЛЕНО",
+    "invalid": "НЕВЕРНО",
+    "denied": "ОТКАЗ",
+    "debug": "ОТЛАДКА",
+    "info": "ИНФО",
+}
 
 
 def _f(x: Any, default: Optional[float] = None) -> Optional[float]:
@@ -92,206 +253,361 @@ def _s(x: Any, default: str = "") -> str:
         return default
 
 
+def _looks_like_ru_plate(plate: str, strict: bool = False) -> bool:
+    p = (plate or "").strip().upper()
+    if not p:
+        return False
+    if strict:
+        return bool(_RE_RU_STRICT.match(p))
+    return bool(_RE_RU_LOOSE.match(p))
+
+
+def _translate_reason_ru(message_or_reason: str) -> str:
+    s = (message_or_reason or "").strip()
+    if not s:
+        return s
+
+    # Если это "http_error: ..." — оставим хвост, но переведём префикс
+    if s.startswith("http_error"):
+        return "Ошибка отправки в gatebox"
+
+    # Часто приходят чистые reason-коды
+    if s in _RU_REASON_MAP:
+        return _RU_REASON_MAP[s]
+
+    # Иногда reason лежит в более длинной строке
+    # (например "invalid_format_or_region: ...")
+    for k, v in _RU_REASON_MAP.items():
+        if k and k in s:
+            return v
+
+    return s
+
+
 def _derive_status(payload: Dict[str, Any]) -> Tuple[str, str]:
     """Нормализуем статус/сообщение для UI."""
     if isinstance(payload.get("status"), str) and payload["status"]:
-        return payload["status"], _s(payload.get("message") or payload.get("reason") or "")
+        st = payload["status"]
+        msg = _s(payload.get("message") or payload.get("reason") or "")
+        return st, msg
 
-    reason = _s(payload.get("reason"))
-    mqtt_pub = payload.get("mqtt_published") is True
-    valid = payload.get("valid")
-    allowed = payload.get("allowed")
+    if payload.get("ok") is True:
+        return "sent", _s(payload.get("reason") or payload.get("message") or "")
 
-    if mqtt_pub:
-        return "sent", "MQTT отправлено"
-    if "cooldown" in reason:
-        return "cooldown", reason or "cooldown"
-    if valid is False:
-        return "invalid", reason or "invalid"
-    if allowed is False:
-        return "denied", reason or "not allowed"
-    if payload.get("ok") is False:
-        return "info", reason or "not ok"
-    return "info", reason or ""
+    if payload.get("valid") is False:
+        return "invalid", _s(payload.get("reason") or "invalid")
+
+    return "denied", _s(payload.get("reason") or payload.get("message") or "")
+
+
+def _should_add_event_for_ui(payload: Dict[str, Any], plate: str, status: str) -> bool:
+    """
+    NEW: фильтр событий именно для UI.
+    Gatebox может считать мусор полезным для диагностики, но UI лучше держать чистым.
+    """
+    if not UI_EVENTS_ONLY_RU:
+        return True
+
+    # 1) выкидываем noise
+    if bool(payload.get("noise")):
+        return False
+
+    # 2) выкидываем пустое/непохожее
+    if not _looks_like_ru_plate(plate, strict=UI_EVENTS_RU_STRICT):
+        return False
+
+    # 3) invalid обычно = мусор (обрывки, артефакты)
+    if status == "invalid" and not UI_EVENTS_INCLUDE_INVALID:
+        return False
+
+    # 4) denied (например not_in_whitelist) обычно хотим видеть
+    if status == "denied" and not UI_EVENTS_INCLUDE_DENIED:
+        return False
+
+    return True
 
 
 def push_event_from_infer(payload: Dict[str, Any]) -> None:
-    """Сохраняем событие из /infer в кольцевой буфер для UI.
+    """main.py вызывает это после /infer, чтобы UI видел события."""
+    try:
+        ts = float(payload.get("ts") or time.time())
+        plate = str(payload.get("plate") or payload.get("plate_norm") or "")
+        raw = payload.get("raw")
+        conf = payload.get("conf")
+        status, message = _derive_status(payload)
 
-    Принцип:
-    - полезные события → level=info → видны в UI по умолчанию
-    - мусор OCR → level=debug → скрыт, но доступен через include_debug=1
-    """
-    ts = _f(payload.get("ts"), None) or time.time()
-    plate = _s(payload.get("plate") or payload.get("number") or payload.get("plate_norm") or payload.get("raw") or "—")
-    raw = payload.get("raw")
-    conf = payload.get("conf")
+        # FIX/CHG: уровень события берём из payload.debug или log_level (если есть)
+        # (оставляем старую логику как fallback)
+        if isinstance(payload.get("log_level"), str) and payload["log_level"]:
+            lvl = str(payload["log_level"]).strip().lower()
+            level = "debug" if lvl == "debug" else "info"
+        else:
+            level = "debug" if bool(payload.get("debug")) else "info"
 
-    status, message = _derive_status(payload)
+        meta = payload.get("meta") if isinstance(payload.get("meta"), dict) else None
 
-    # уровень логирования события
-    level = _s(payload.get("log_level") or payload.get("level") or "info")
-    if level not in ("info", "debug"):
-        level = "info"
+        # NEW: фильтр мусора для UI
+        if not _should_add_event_for_ui(payload, plate=plate, status=status):
+            return
 
-    # диагностические метаданные (best-effort)
-    meta = payload.get("meta")
-    if not isinstance(meta, dict):
-        meta = {
-            "variant": payload.get("variant") or payload.get("ocr_variant"),
-            "warped": payload.get("warped") if payload.get("warped") is not None else payload.get("ocr_warped"),
-            "timing_ms": payload.get("timing_ms"),
-        }
+        # NEW: русификация сообщения/статуса в UI
+        status_ui = status
+        message_ui = message
+        if UI_I18N_RU:
+            status_ui = _RU_STATUS_MAP.get(status, status)
+            message_ui = _translate_reason_ru(message)
 
-    _event_store.add(
-        EventItem(
-            ts=float(ts),
-            plate=str(plate),
-            raw=_s(raw) if raw is not None else None,
-            conf=_f(conf),
-            status=str(status),
-            message=str(message),
-            level=level,
-            meta=meta if isinstance(meta, dict) else None,
+        _event_store.add(
+            EventItem(
+                ts=float(ts),
+                plate=str(plate),
+                raw=_s(raw) if raw is not None else None,
+                conf=_f(conf),
+                status=str(status_ui),
+                message=str(message_ui),
+                level=level,
+                meta=meta,
+            )
         )
-    )
+    except Exception:
+        # события не должны валить /infer
+        return
+
+
+# ---------- FIX: tolerant query parsing (no 422) ----------
+
+def _q_int(v: Any, default: int, min_v: int | None = None, max_v: int | None = None) -> int:
+    try:
+        if v is None:
+            x = int(default)
+        else:
+            # FastAPI может передать уже str, но иногда прилетает "[object Object]"
+            s = str(v).strip()
+            x = int(float(s))
+    except Exception:
+        x = int(default)
+    if min_v is not None:
+        x = max(int(min_v), x)
+    if max_v is not None:
+        x = min(int(max_v), x)
+    return x
+
+
+def _q_float(v: Any, default: float, min_v: float | None = None) -> float:
+    try:
+        if v is None:
+            x = float(default)
+        else:
+            x = float(str(v).strip())
+    except Exception:
+        x = float(default)
+    if min_v is not None:
+        x = max(float(min_v), x)
+    return x
+
+
+def _q_bool(v: Any, default: bool = False) -> bool:
+    if v is None:
+        return bool(default)
+    s = str(v).strip().lower()
+    if s in ("1", "true", "yes", "y", "on"):
+        return True
+    if s in ("0", "false", "no", "n", "off"):
+        return False
+    return bool(default)
 
 
 @router.get("/events")
-def api_events(limit: int = 50, after_ts: Optional[float] = None, include_debug: bool = False):
-    return {"ok": True, "items": _event_store.latest(limit=limit, after_ts=after_ts, include_debug=include_debug)}
+def api_events(limit: Any = 50, after_ts: Any = None, include_debug: Any = False):
+    # FIX: не даём 422 — парсим вручную
+    lim = _q_int(limit, default=50, min_v=1, max_v=500)
+    aft = _q_float(after_ts, default=0.0, min_v=0.0) if after_ts is not None else None
+    inc = _q_bool(include_debug, default=False)
+    return {"ok": True, "items": _event_store.latest(limit=lim, after_ts=aft, include_debug=inc)}
 
 
 @router.get("/events/stream")
 async def api_events_stream(
     request: Request,
-    after_ts: Optional[float] = None,
-    include_debug: bool = False,
-    poll_ms: int = 250,
-    heartbeat_sec: int = 15,
+    after_ts: Any = None,
+    include_debug: Any = False,
+    poll_ms: Any = 250,
+    heartbeat_sec: Any = 15,
 ):
-    """SSE stream событий.
-
-    Клиент:
-      - подключается один раз
-      - получает события мгновенно без кнопок/обновлений
-      - при реконнекте может передать after_ts
-
-    Формат:
-      event: event
-      data: {EventItem JSON}
-    """
-
-    last_ts: float = float(after_ts or 0.0)
+    """SSE stream событий."""
+    # FIX: не даём 422 — парсим вручную
+    last_ts: float = float(_q_float(after_ts, default=0.0, min_v=0.0)) if after_ts is not None else 0.0
+    inc = _q_bool(include_debug, default=False)
+    poll = _q_int(poll_ms, default=250, min_v=50, max_v=2000)
+    hb = _q_int(heartbeat_sec, default=15, min_v=5, max_v=120)
 
     async def gen():
         nonlocal last_ts
-        # совет браузеру по автоповтору (мс)
         yield "retry: 2000\n\n"
-
         last_send = time.time()
 
         while True:
             if await request.is_disconnected():
                 break
 
-            # latest() возвращает newest-first → для стрима отдаём по возрастанию ts
-            batch = _event_store.latest(limit=200, after_ts=last_ts, include_debug=include_debug)
-            if batch:
-                batch.sort(key=lambda x: float(x.get("ts") or 0.0))
-                for item in batch:
-                    ts = float(item.get("ts") or 0.0)
-                    if ts > last_ts:
-                        last_ts = ts
-                    data = json.dumps(item, ensure_ascii=False)
-                    yield f"event: event\ndata: {data}\n\n"
-                    last_send = time.time()
+            try:
+                items = _event_store.after(last_ts, include_debug=inc)
+            except Exception:
+                items = []
 
-            # keepalive, чтобы прокси/браузер не рвал соединение
-            if (time.time() - last_send) >= float(heartbeat_sec):
+            for it in items:
+                try:
+                    last_ts = max(last_ts, float(it.ts))
+                    yield f"event: event\ndata: {json.dumps(it.to_dict(), ensure_ascii=False)}\n\n"
+                    last_send = time.time()
+                except Exception:
+                    # если вдруг в одном событии meta "плохая" — не валим поток
+                    continue
+
+            if (time.time() - last_send) >= float(hb):
                 yield f": ping {int(time.time())}\n\n"
                 last_send = time.time()
 
-            await asyncio.sleep(max(0.05, float(poll_ms) / 1000.0))
+            await asyncio.sleep(max(0.05, float(poll) / 1000.0))
 
     headers = {
         "Cache-Control": "no-cache",
         "Connection": "keep-alive",
-        # если будет nginx — важно, чтобы он не буферизовал SSE
         "X-Accel-Buffering": "no",
     }
     return StreamingResponse(gen(), media_type="text/event-stream", headers=headers)
 
-# =========================================================
-# NEW: updater proxy (v0.3.1)
-# UI -> gatebox -> updater (без CORS и без прямого доступа)
-# =========================================================
 
-UPDATER_URL = os.environ.get("UPDATER_URL", "http://updater:9010")
-UPDATER_TIMEOUT_SEC = float(os.environ.get("UPDATER_TIMEOUT_SEC", "8.0"))
-
-def _updater_get(path: str) -> requests.Response:
-    return requests.get(f"{UPDATER_URL}{path}", timeout=UPDATER_TIMEOUT_SEC)
-
-def _updater_post(path: str) -> requests.Response:
-    return requests.post(f"{UPDATER_URL}{path}", timeout=UPDATER_TIMEOUT_SEC)
-
-@router.get("/update/status")
-def update_status():
-    try:
-        r = _updater_get("/status")
-        r.raise_for_status()
-        return r.json()
-    except requests.RequestException as e:
-        raise HTTPException(status_code=502, detail=f"updater unavailable: {e}")
-
-@router.get("/update/log")
-def update_log():
-    try:
-        r = _updater_get("/log")
-        r.raise_for_status()
-        return r.json()
-    except requests.RequestException as e:
-        raise HTTPException(status_code=502, detail=f"updater unavailable: {e}")
-
-@router.post("/update/check")
-def update_check():
-    try:
-        r = _updater_post("/check")
-        r.raise_for_status()
-        return r.json()
-    except requests.RequestException as e:
-        raise HTTPException(status_code=502, detail=f"updater unavailable: {e}")
-
-@router.post("/update/start")
-def update_start():
-    try:
-        r = _updater_post("/start")
-        r.raise_for_status()
-        return r.json()
-    except requests.RequestException as e:
-        raise HTTPException(status_code=502, detail=f"updater unavailable: {e}")
-
-@router.get("/update/report")
-def update_report():
-    """
-    Проксируем zip отчёт от updater.
-    """
-    try:
-        r = _updater_get("/report")
-        r.raise_for_status()
-        content = r.content
-        # отдаём как attachment
-        headers = {
-            "Content-Type": "application/zip",
-            "Content-Disposition": 'attachment; filename="gatebox_report.zip"',
-        }
-        return Response(content=content, headers=headers)
-    except requests.RequestException as e:
-        raise HTTPException(status_code=502, detail=f"updater unavailable: {e}")
 # =========================
-# RTSP heartbeat/status
+# SETTINGS (settings.json)
 # =========================
+
+_settings_store: Optional[SettingsStore] = None
+_apply_callback: Optional[Callable[[Dict[str, Any]], Dict[str, Any]]] = None
+_DEFAULT_SETTINGS: Dict[str, Any] = {}
+
+
+def init_settings(path: str, defaults: Dict[str, Any]) -> None:
+    """Инициализируем SettingsStore. Вызывается один раз из main.py."""
+    global _settings_store, _DEFAULT_SETTINGS
+    _DEFAULT_SETTINGS = copy.deepcopy(defaults or {})
+    _settings_store = SettingsStore(path=path, defaults=_DEFAULT_SETTINGS)
+
+
+def set_apply_callback(fn: Callable[[Dict[str, Any]], Dict[str, Any]]) -> None:
+    """main.py устанавливает функцию, которая применит настройки (MQTT/GateDecider/etc)."""
+    global _apply_callback
+    _apply_callback = fn
+
+
+def _require_store() -> SettingsStore:
+    global _settings_store
+    if _settings_store is None:
+        _settings_store = SettingsStore(path="/config/settings.json", defaults=_DEFAULT_SETTINGS)
+    return _settings_store
+
+
+def get_settings_store() -> SettingsStore:
+    return _require_store()
+
+
+def _strip_nones(x: Any) -> Any:
+    """Не даём null/None затирать настройки."""
+    if isinstance(x, dict):
+        out: Dict[str, Any] = {}
+        for k, v in x.items():
+            if v is None:
+                continue
+            out[k] = _strip_nones(v)
+        return out
+    if isinstance(x, list):
+        return [_strip_nones(v) for v in x]
+    return x
+
+
+def _extract_settings_payload(payload: Dict[str, Any]) -> Dict[str, Any]:
+    """Принимаем оба формата:
+    - {"settings": {...}}  (рекомендуемый)
+    - {...}               (старый)
+    """
+    if not isinstance(payload, dict):
+        raise HTTPException(status_code=400, detail="settings payload must be object")
+    inner = payload.get("settings")
+    if isinstance(inner, dict):
+        return inner
+    return payload
+
+
+def _mask_settings_for_get(settings: Dict[str, Any]) -> Dict[str, Any]:
+    """Не светим пароль в GET/status."""
+    s = copy.deepcopy(settings or {})
+    mqtt = s.get("mqtt")
+    if isinstance(mqtt, dict) and mqtt.get("pass"):
+        mqtt["pass"] = "***"
+    return s
+
+
+def _drop_empty_mqtt_pass(patch: Dict[str, Any]) -> Dict[str, Any]:
+    """mqtt.pass == '' не должен затирать сохранённый пароль."""
+    if not isinstance(patch, dict):
+        return patch
+    mqtt_patch = patch.get("mqtt")
+    if isinstance(mqtt_patch, dict) and "pass" in mqtt_patch:
+        if str(mqtt_patch.get("pass") or "") == "":
+            mqtt_patch.pop("pass", None)
+    return patch
+
+
+@router.get("/settings")
+def api_get_settings():
+    st = _require_store()
+    return {"ok": True, "settings": _mask_settings_for_get(st.get())}
+
+
+@router.put("/settings")
+def api_put_settings(patch: Dict[str, Any]):
+    st = _require_store()
+    data_in = _extract_settings_payload(patch)
+    data_in = _strip_nones(data_in)
+    data_in = _drop_empty_mqtt_pass(data_in)
+    data = st.update(data_in)
+    return {"ok": True, "settings": _mask_settings_for_get(data)}
+
+
+@router.post("/settings/reset")
+def api_reset_settings():
+    st = _require_store()
+    data = st.reset()
+    if not isinstance(data, dict) or not data:
+        data = st.update(copy.deepcopy(_DEFAULT_SETTINGS))
+    return {"ok": True, "settings": _mask_settings_for_get(data)}
+
+
+@router.post("/settings/reload")
+def api_reload_settings():
+    st = _require_store()
+    data = st.reload()
+    if not isinstance(data, dict) or not data:
+        data = st.update(copy.deepcopy(_DEFAULT_SETTINGS))
+    return {"ok": True, "settings": _mask_settings_for_get(data)}
+
+
+@router.post("/settings/apply")
+def api_apply_settings():
+    st = _require_store()
+    data = st.get()
+
+    if _apply_callback is None:
+        raise HTTPException(status_code=500, detail="apply_callback is not set (main.py should call set_apply_callback)")
+
+    applied = _apply_callback(data)
+    return {"ok": True, "applied": applied, "settings": _mask_settings_for_get(data)}
+
+
+# =========================
+# RTSP heartbeat/status (rtsp_worker может слать heartbeat)
+# =========================
+
 _last_rtsp_hb: Dict[str, Any] = {"ts": 0.0}
 
 
@@ -346,192 +662,18 @@ def api_rtsp_status():
     }
 
 
-@router.get("/rtsp/frame.jpg")
-def api_rtsp_frame_jpg():
-    """Возвращает самый свежий кадр (JPG), который пишет rtsp_worker."""
-    if not LIVE_FRAME_PATH.exists():
-        raise HTTPException(status_code=404, detail="no frame yet")
-    return FileResponse(str(LIVE_FRAME_PATH), media_type="image/jpeg")
-
-
-@router.get("/rtsp/frame_meta")
-def api_rtsp_frame_meta():
-    """Метаданные кадра (ts,w,h)."""
-    return {"ok": True, "meta": _read_json(LIVE_META_PATH, {"ts": 0})}
-
-
-@router.get("/rtsp/boxes")
-def api_rtsp_boxes():
-    """BBox от YOLO для отрисовки на UI."""
-    return {"ok": True, "boxes": _read_json(LIVE_BOXES_PATH, {"ts": 0, "items": []})}
-
-
 # =========================
-# SETTINGS (settings.json)
-# =========================
-_settings_store: Optional[SettingsStore] = None
-_apply_callback: Optional[Callable[[Dict[str, Any]], Dict[str, Any]]] = None
-
-_DEFAULT_SETTINGS: Dict[str, Any] = {}
-
-
-def init_settings(path: str, defaults: Dict[str, Any]) -> None:
-    """Инициализируем SettingsStore. Вызывается один раз из main.py."""
-    global _settings_store, _DEFAULT_SETTINGS
-    _DEFAULT_SETTINGS = copy.deepcopy(defaults or {})
-    _settings_store = SettingsStore(path=path, defaults=_DEFAULT_SETTINGS)
-
-
-def set_apply_callback(fn: Callable[[Dict[str, Any]], Dict[str, Any]]) -> None:
-    """main.py устанавливает сюда функцию, которая применит настройки (MQTT/GateDecider/etc)."""
-    global _apply_callback
-    _apply_callback = fn
-
-
-def _require_store() -> SettingsStore:
-    global _settings_store
-    if _settings_store is None:
-        _settings_store = SettingsStore(path="/config/settings.json", defaults=_DEFAULT_SETTINGS)
-    return _settings_store
-    
-def get_settings_store() -> SettingsStore:
-    return _require_store()
-
-def _strip_nones(x: Any) -> Any:
-    """PowerShell/клиенты легко присылают null/None — не даём им затирать настройки."""
-    if isinstance(x, dict):
-        out: Dict[str, Any] = {}
-        for k, v in x.items():
-            if v is None:
-                continue
-            out[k] = _strip_nones(v)
-        return out
-    if isinstance(x, list):
-        return [_strip_nones(v) for v in x]
-    return x
-
-
-def _extract_settings_payload(payload: Dict[str, Any]) -> Dict[str, Any]:
-    """Принимаем оба формата:
-    - {"settings": {...}}  (рекомендуемый)
-    - {...}               (старый)
-    """
-    if not isinstance(payload, dict):
-        raise HTTPException(status_code=400, detail="settings payload must be object")
-    inner = payload.get("settings")
-    if isinstance(inner, dict):
-        return inner
-    return payload
-
-
-def _mask_settings_for_get(settings: Dict[str, Any]) -> Dict[str, Any]:
-    """Не светим пароль в GET/status."""
-    s = copy.deepcopy(settings or {})
-    mqtt = s.get("mqtt")
-    if isinstance(mqtt, dict):
-        if mqtt.get("pass"):
-            mqtt["pass"] = "***"
-    return s
-
-
-def _drop_empty_mqtt_pass(patch: Dict[str, Any]) -> Dict[str, Any]:
-    """mqtt.pass == '' не должен затирать сохранённый пароль."""
-    if not isinstance(patch, dict):
-        return patch
-    mqtt_patch = patch.get("mqtt")
-    if isinstance(mqtt_patch, dict) and "pass" in mqtt_patch:
-        try:
-            if str(mqtt_patch.get("pass") or "") == "":
-                mqtt_patch.pop("pass", None)
-        except Exception:
-            mqtt_patch.pop("pass", None)
-    return patch
-
-
-@router.get("/settings")
-def api_get_settings():
-    st = _require_store()
-    return {"ok": True, "settings": _mask_settings_for_get(st.get())}
-
-
-@router.put("/settings")
-def api_put_settings(patch: Dict[str, Any]):
-    st = _require_store()
-
-    data_in = _extract_settings_payload(patch)
-    data_in = _strip_nones(data_in)
-    data_in = _drop_empty_mqtt_pass(data_in)
-
-    data = st.update(data_in)
-    return {"ok": True, "settings": _mask_settings_for_get(data)}
-
-
-@router.post("/settings/reset")
-def api_reset_settings():
-    st = _require_store()
-
-    data = st.reset()
-    if not isinstance(data, dict) or not data or not isinstance(data.get("mqtt"), dict):
-        data = st.update(copy.deepcopy(_DEFAULT_SETTINGS))
-
-    return {"ok": True, "settings": _mask_settings_for_get(data)}
-
-
-@router.post("/settings/reload")
-def api_reload_settings():
-    st = _require_store()
-    data = st.reload()
-    if not isinstance(data, dict) or not data or not isinstance(data.get("mqtt"), dict):
-        data = st.update(copy.deepcopy(_DEFAULT_SETTINGS))
-    return {"ok": True, "settings": _mask_settings_for_get(data)}
-
-
-@router.post("/settings/apply")
-def api_apply_settings():
-    st = _require_store()
-    data = st.get()
-
-    if _apply_callback is None:
-        raise HTTPException(status_code=500, detail="apply_callback is not set (main.py should call set_apply_callback)")
-
-    applied = _apply_callback(data)  # type: ignore[misc]
-    return {"ok": True, "applied": applied, "settings": _mask_settings_for_get(data)}
-
-
-# =========================
-# STATUS
-# =========================
-@router.get("/status")
-def api_status():
-    now = time.time()
-    hb_ts = float(_last_rtsp_hb.get("ts") or 0.0)
-    age_ms = int(max(0.0, (now - hb_ts) * 1000.0)) if hb_ts > 0 else None
-    rtsp_alive = bool(age_ms is not None and age_ms < 5000)
-
-    return {
-        "ok": True,
-        "events": {"count": _event_store.count(), "max": EVENTS_MAX},
-        "rtsp": {
-            "alive": rtsp_alive,
-            "age_ms": age_ms,
-            "camera_id": _last_rtsp_hb.get("camera_id"),
-            "fps": _last_rtsp_hb.get("fps"),
-            "errors": _last_rtsp_hb.get("errors"),
-            "sent": _last_rtsp_hb.get("sent"),
-            "note": _last_rtsp_hb.get("note"),
-        },
-        "settings": _mask_settings_for_get(_require_store().get()),
-        "ts": now,
-    }
-    # =========================
 # WHITELIST API (для UI)
 # =========================
+
 WHITELIST_PATH = os.environ.get("WHITELIST_PATH", "/config/whitelist.json")
 _whitelist_reload_cb = None
+
 
 def set_whitelist_reload_callback(fn):
     global _whitelist_reload_cb
     _whitelist_reload_cb = fn
+
 
 @router.get("/whitelist")
 def api_get_whitelist():
@@ -545,6 +687,7 @@ def api_get_whitelist():
         return {"ok": True, "plates": plates}
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"whitelist read failed: {e}")
+
 
 @router.put("/whitelist")
 def api_put_whitelist(payload: Dict[str, Any]):
@@ -563,6 +706,7 @@ def api_put_whitelist(payload: Dict[str, Any]):
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"whitelist write failed: {e}")
 
+
 @router.post("/whitelist/reload")
 def api_reload_whitelist():
     if _whitelist_reload_cb is None:
@@ -572,47 +716,53 @@ def api_reload_whitelist():
         return {"ok": True}
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"whitelist reload failed: {e}")
-        # =========================
-# SYSTEM / UPDATE / REPORT
-# =========================
-import requests
 
-UPDATER_URL = os.environ.get("UPDATER_URL", "http://updater:9010")
 
-@router.get("/system/versions")
-def api_versions():
-    return {
-        "ok": True,
-        "gatebox": os.environ.get("APP_VERSION", "dev"),
-        "rtsp_worker": os.environ.get("APP_VERSION", "dev"),
-        "ui": os.environ.get("APP_VERSION", "dev"),
-    }
+# =========================================================
+# Camera RTSP test endpoint (UI)
+# =========================================================
 
-@router.post("/system/update/check")
-def api_update_check():
-    r = requests.post(f"{UPDATER_URL}/check", timeout=5)
-    return r.json()
+class CameraTestIn(BaseModel):
+    rtsp_url: str | None = None
+    timeout_sec: float = 5.0
+    use_settings: bool = False
 
-@router.post("/system/update/start")
-def api_update_start():
-    r = requests.post(f"{UPDATER_URL}/start", timeout=5)
-    return r.json()
 
-@router.get("/system/update/status")
-def api_update_status():
-    r = requests.get(f"{UPDATER_URL}/status", timeout=5)
-    return r.json()
+@router.post("/camera/test")
+def camera_test(data: CameraTestIn):
+    """
+    Проверка RTSP потока:
+    - открываем камеру
+    - читаем 1 кадр
+    """
+    import cv2  # локально, чтобы не грузить лишнее при старте
 
-@router.get("/system/update/log")
-def api_update_log():
-    r = requests.get(f"{UPDATER_URL}/log", timeout=5)
-    return r.json()
+    # 1) Откуда брать RTSP
+    if data.use_settings:
+        try:
+            settings = _require_store().get()
+            rtsp_url = settings.get("camera", {}).get("rtsp_url")
+        except Exception:
+            rtsp_url = None
+    else:
+        rtsp_url = data.rtsp_url
 
-@router.get("/system/report")
-def api_system_report():
-    r = requests.get(f"{UPDATER_URL}/report", timeout=10)
-    return Response(
-        content=r.content,
-        media_type="application/zip",
-        headers={"Content-Disposition": "attachment; filename=gatebox_report.zip"},
-    )
+    if not rtsp_url:
+        return {"ok": False, "error": "rtsp_url_not_set"}
+
+    start = time.time()
+
+    cap = cv2.VideoCapture(rtsp_url)
+    if not cap.isOpened():
+        return {"ok": False, "error": "cannot_open_stream"}
+
+    cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
+    ret, frame = cap.read()
+    cap.release()
+
+    if not ret or frame is None:
+        return {"ok": False, "error": "cannot_read_frame"}
+
+    h, w = frame.shape[:2]
+    elapsed = int((time.time() - start) * 1000)
+    return {"ok": True, "width": w, "height": h, "grab_ms": elapsed}

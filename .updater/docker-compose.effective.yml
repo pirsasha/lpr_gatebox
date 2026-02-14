@@ -1,0 +1,311 @@
+# ==========================================================
+# LPR_GATEBOX — продуктовый docker-compose
+# ==========================================================
+#
+# Архитектура (ВАЖНО понять один раз):
+#
+# 1) gatebox
+#    - получает JPEG с номером
+#    - делает OCR
+#    - крутит / warp'ит номер если надо
+#    - нормализует (латиница → кириллица)
+#    - проверяет формат РФ
+#    - стабилизирует номер (confirm)
+#    - проверяет whitelist
+#    - ПУБЛИКУЕТ MQTT, если ok=True
+#
+# 2) rtsp_worker
+#    - читает RTSP
+#    - декодирует видео
+#    - YOLO находит номер
+#    - вырезает номер (crop)
+#    - выпрямляет номер (rectify)
+#    - чуть уточняет рамку (refine)
+#    - отправляет JPEG в gatebox
+#
+# ❌ rtsp_worker НЕ делает OCR
+# ❌ gatebox НЕ знает про RTSP / YOLO
+#
+# ==========================================================
+
+services:
+
+  # ========================================================
+  # GATEBOX — мозг системы
+  # ========================================================
+  gatebox:
+    build:
+      context: /project
+      target: gatebox
+    container_name: gatebox
+    restart: unless-stopped
+
+    # Порт UI + API
+    ports:
+      - "8080:8080"
+
+    environment:
+      # ---------------- Общая информация ----------------
+      APP_VERSION: "0.3.0"
+      GIT_SHA: "dev"
+      BUILD_TIME: "2026-02-07T00:00:00+03:00"
+
+      # Python сразу печатает логи (без буферов)
+      PYTHONUNBUFFERED: "1"
+
+      # ---------------- Логи ----------------
+      DEBUG_LOG: "0"               # подробные debug-логи
+      PRINT_EVERY_RESPONSE: "0"    # печатать каждый /infer ответ
+
+      # ---------------- OCR ----------------
+      MODEL_PATH: "/models/plate_ocr.onnx"   # OCR модель
+      SETTINGS_PATH: "/config/settings.json" # настройки/параметры обработки (json)
+      ALPHABET: "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ" # допустимые символы до нормализации
+
+      # ---------------- Логика принятия решения ----------------
+      MIN_CONF: "0.80"             # минимальная уверенность OCR (ниже — игнор/не открывать)
+      CONFIRM_N: "2"               # сколько раз номер должен повториться для подтверждения
+      CONFIRM_WINDOW_SEC: "2.0"    # окно подтверждения (сек) — за это время ищем повторы
+      COOLDOWN_SEC: "15.0"         # защита от спама: сколько сек не реагировать повторно
+      WHITELIST_PATH: "/config/whitelist.json" # список разрешённых номеров (если используется)
+
+      # ---------------- OCR улучшения ----------------
+      OCR_ORIENT_TRY: "1"          # пробовать поворот номера (0/90/180/270) если OCR плохой
+      OCR_WARP_TRY: "1"            # пробовать warp (выпрямление перспективы) если OCR плохой
+      OCR_WARP_W: "320"            # ширина изображения, на котором делаем warp+OCR
+      OCR_WARP_H: "96"             # высота изображения, на котором делаем warp+OCR
+
+      # ---------------- POSTCROP ----------------
+      # Подрезка изображения ПОСЛЕ OCR-warp
+      # Нужно, чтобы убрать рамку, болты, фон
+      POSTCROP: "1"                # включить пост-обрезку (0/1)
+      # LEFT, RIGHT, TOP, BOTTOM (доли от размера)
+      POSTCROP_LRBT: "0.015,0.015,0.040,0.040" # сколько отрезать слева/справа/сверху/снизу
+
+      # ---------------- Проверка региона РФ ----------------
+      REGION_CHECK: "1"            # проверять код региона (валидный список РФ)
+      REGION_STAB: "1"             # стабилизировать регион по нескольким срабатываниям
+      REGION_STAB_WINDOW_SEC: "2.5" # окно стабилизации региона (сек)
+      REGION_STAB_MIN_HITS: "3"     # минимум попаданий региона в окне
+      REGION_STAB_MIN_RATIO: "0.60" # минимальная доля (hits/total) для принятия региона
+
+      # ---------------- MQTT ----------------
+      MQTT_ENABLED: "1"            # 1=публиковать события, 0=выкл
+      MQTT_HOST: "192.168.2.102"   # брокер MQTT (обычно роутер/HA/сервер)
+      MQTT_PORT: "1883"            # порт MQTT (1883 без TLS)
+      MQTT_USER: "pirsasha"        # логин MQTT (если нужен)
+      MQTT_PASS: "Ps!628227!"      # пароль MQTT
+      MQTT_TOPIC: "gate/open"      # топик для команды открытия/события
+
+      # ---------------- Telegram ----------------
+      TELEGRAM_BOT_TOKEN: "8580546225:AAH2_pLVlzXM0YgLd8Dfg9GkzOid_Txg348" # токен бота для уведомлений
+
+    volumes:
+      - type: bind
+        source: D:/lpr_gatebox/models
+        target: /models
+        read_only: true
+      - type: bind
+        source: D:/lpr_gatebox/config
+        target: /config         # настройки, whitelist (read-write)
+
+    # Проверка что сервис жив
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "python",
+          "-c",
+          "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8080/health', timeout=2).read()",
+        ]
+      interval: 10s
+      timeout: 3s
+      retries: 10
+
+  # ========================================================
+  # RTSP_WORKER — видео + YOLO
+  # ========================================================
+  rtsp_worker:
+    build:
+      context: /project
+      target: rtsp_worker
+    container_name: rtsp_worker
+    restart: unless-stopped
+
+    depends_on:
+      - gatebox
+
+    environment:
+      # ---------------- Runtime ----------------
+      PYTHONPATH: "/work"         # где лежит код/пакеты внутри контейнера worker
+      PYTHONUNBUFFERED: "1"       # логи без буфера (сразу в docker logs)
+
+      # ---------------- Логи ----------------
+      WORKER_DEBUG: "0"           # подробные debug-логи воркера
+
+      # ---------------- LIVE preview ----------------
+      LIVE_DIR: "/config/live"    # куда worker пишет превью кадры для UI
+      LIVE_EVERY_SEC: "2.0"       # как часто обновлять превью
+      LIVE_DRAW_YOLO: "0"         # рисовать bbox/подписи YOLO на превью (0/1)
+
+      # ---------------- RTSP ----------------
+      RTSP_URL: "rtsp://192.168.2.102:8554/lpr" # RTSP поток камеры
+      RTSP_FPS: "1.0"            # целевой FPS для обработки (legacy/совместимость)
+
+      # Частоты:
+      READ_FPS: "12"              # чтение кадров (декод)
+      DET_FPS: "2"                # YOLO детекция (сколько раз в сек искать номер)
+      SEND_FPS: "1.5"             # отправка crop в gatebox (максимум)
+
+      INFER_URL: "http://gatebox:8080/infer" # куда слать JPEG с номером (внутри сети compose)
+
+      # ---------------- ROI ----------------
+      ROI: ""                     # ROI-полигон/область интереса; пусто = весь кадр
+
+      # ---------------- YOLO ----------------
+      DET_MODEL_PATH: "/models/license-plate-finetune-v1s.pt" # модель детекции номера
+      DET_CONF: "0.40"            # порог уверенности детекции
+      DET_IOU: "0.45"             # NMS IoU порог
+      DET_IMG_SIZE: "416"         # размер входа YOLO (быстрее/точнее баланс)
+
+      # ---------------- Crop ----------------
+      PLATE_PAD: "0.16"           # расширение bbox вокруг номера (доля)
+      OCR_CROP_MODE: "yolo"       # режим crop (по bbox yolo и/или fallback)
+      SEND_ON_NO_DET: "0"         # слать кадр в gatebox даже без детекции (0/1)
+
+      # ---------------- Rectify ----------------
+      RECTIFY: "1"                # выпрямлять номер (перспектива/квад) до отправки
+      RECTIFY_W: "320"            # целевая ширина rectify
+      RECTIFY_H: "96"             # целевая высота rectify
+
+      # ---------------- Refine ----------------
+      REFINE_INNER_PAD: "0.04"    # внутренняя подрезка после rectify (убрать рамки)
+      REFINE_MIN_AREA_RATIO: "0.03" # минимальная площадь "пластины" относительно кадра crop
+
+      # ---------------- HTTP ----------------
+      JPEG_QUALITY: "85"          # качество JPEG при отправке (0-100)
+      HTTP_TIMEOUT_SEC: "2.0"     # таймаут запроса в gatebox (/infer)
+
+      # ---------------- Логика событий ----------------
+      EVENT_MODE: "on_plate_change"           # когда генерировать событие (на смену номера)
+      GLOBAL_SEND_MIN_INTERVAL_SEC: "0.5"     # минимальный интервал между отправками (сек)
+
+      # Повторная отправка одного номера
+      # ВАЖНО: должна быть < CONFIRM_WINDOW_SEC
+      PLATE_RESEND_SEC: "0.4"     # как часто можно повторно слать тот же номер (сек)
+
+      # Предподтверждение в worker
+      PLATE_CONFIRM_K: "2"        # сколько одинаковых распознаваний нужно до отправки
+      PLATE_CONFIRM_WINDOW_SEC: "1.8" # окно для предподтверждения (сек)
+
+      # ---------------- Tracking ----------------
+      TRACK_ENABLE: "1"           # включить трекинг bbox между детекциями
+      TRACK_HOLD_SEC: "1.0"       # сколько держать трек без новых детекций
+      TRACK_ALPHA: "0.65"         # сглаживание координат (EMA)
+      TRACK_IOU_MIN: "0.12"       # минимум IoU для привязки bbox к треку
+
+      MIN_PLATE_W: "120"          # фильтр по минимальной ширине номера в пикселях
+      MIN_PLATE_H: "30"           # фильтр по минимальной высоте номера в пикселях
+
+      # ---------------- Защита от зависаний ----------------
+      FREEZE_ENABLE: "0"          # watchdog зависаний чтения/кадров (0/1)
+
+      # ---------------- Debug ----------------
+      SAVE_DIR: "/debug"          # куда сохранять debug-артефакты
+      SAVE_EVERY: "0"             # сохранять каждый N-й кадр (0=выкл)
+      SAVE_FULL_FRAME: "0"        # сохранять полный кадр (0/1)
+      SAVE_WITH_ROI: "0"          # рисовать ROI на сохраняемых кадрах (0/1)
+      LOG_EVERY_SEC: "5"          # периодические логи статуса (сек)
+
+      # ---------------- FFmpeg ----------------
+      # Параметры OpenCV/FFmpeg для снижения задержки и избежания буферизации RTSP
+      OPENCV_FFMPEG_CAPTURE_OPTIONS: "rtsp_transport;tcp|stimeout;8000000|rw_timeout;30000000|fflags;nobuffer|flags;low_delay|max_delay;0|probesize;32000|analyzeduration;0"
+
+    volumes:
+      - type: bind
+        source: D:/lpr_gatebox/models
+        target: /models
+        read_only: true
+      - type: bind
+        source: D:/lpr_gatebox/debug
+        target: /debug
+      - type: bind
+        source: D:/lpr_gatebox/config
+        target: /config
+      - type: bind
+        source: D:/lpr_gatebox/debug_test
+        target: /work/debug_test
+      - type: bind
+        source: D:/lpr_gatebox/test_images
+        target: /work/test_images
+        read_only: true
+
+    command: ["python", "app/rtsp_worker.py"]
+
+  # ========================================================
+  # UPDATER — автообновление контейнеров
+  # ========================================================
+  updater:
+    image: lpr_gatebox-updater
+    build:
+      context: /project
+      dockerfile: updater/Dockerfile
+    container_name: updater
+    restart: unless-stopped
+
+    ports:
+      - "9010:9010"
+    networks:
+      - updater_net
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - type: bind
+        source: D:/lpr_gatebox
+        target: /project
+      - type: bind
+        source: D:/lpr_gatebox/config
+        target: /config
+
+    environment:
+      PROJECT_DIR: "/project"                         # где лежит проект внутри контейнера updater
+      COMPOSE_FILE: "/project/docker-compose.yml"     # какой compose-файл updater будет применять
+      COMPOSE_PROJECT_NAME: "lpr_gatebox"             # имя проекта docker-compose (-p), влияет на имена сети/контейнеров
+      UPDATE_SERVICES: "gatebox,rtsp_worker"          # какие сервисы обновлять (pull + recreate)
+      HEALTH_URL: "http://host.docker.internal:8080/api/v1/health"  # URL проверки "система жива" (через хост)
+      HEALTH_TIMEOUT_SEC: "60"                        # сколько секунд ждать, пока health станет ok после апдейта
+
+    # --------------------------------------------------------
+    # FIX: updater НЕ должен быть в default-сети проекта.
+    # Иначе при обновлении, когда compose говорит:
+    #   "Network lpr_gatebox_default needs to be recreated ..."
+    # updater сам держит эту сеть (active endpoints updater),
+    # сеть не удаляется -> net-heal падает -> /start рвёт соединение.
+    #
+    # Решение:
+    # 1) Подключаем updater к отдельной сети updater_net.
+    # 2) Делаем updater_net EXTERNAL (создаётся один раз и не пересоздаётся compose'ом),
+    #    иначе на net-heal helper падает с:
+    #      "Network lpr_gatebox_updater_net needs to be recreated ..."
+    #
+    # Updater общается с Docker через docker.sock и проверяет HEALTH_URL через host.docker.internal,
+    # поэтому ему не нужна lpr_gatebox_default.
+    # --------------------------------------------------------
+    
+
+# ==========================================================
+# Networks
+# ==========================================================
+networks:
+  # Default-сеть проекта.
+  # Compose создаёт её сам (имя привязывается к COMPOSE_PROJECT_NAME).
+  # Если меняются параметры сети (ipv4/ipv6), compose может требовать "recreate".
+  default:
+    name: lpr_gatebox_default
+    driver: bridge
+  # Отдельная сеть только для updater (чтобы не блокировать пересоздание lpr_gatebox_default).
+  # IMPORTANT: external=true — compose НЕ будет пытаться её "пересоздавать", и net-heal не упадёт.
+  updater_net:
+  
+    name: lpr_gatebox_updater_net
+    external: true 
+    # driver: bridge  # driver у external сети задаётся при её создании (docker network create ...)

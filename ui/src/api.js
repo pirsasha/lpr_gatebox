@@ -1,11 +1,21 @@
 // ui/src/api.js
-// v0.2.4-fix6
+// v0.2.4-fix12
 //
-// DEV: через Vite proxy: /api -> http://127.0.0.1:8080
-// PROD: можно задать VITE_API_BASE=http://127.0.0.1:8080
+// Под твою Swagger-картину:
+// - Settings: /api/v1/settings (GET/PUT) ✅
+// - Apply: /api/v1/settings/apply ✅
+// - RTSP: /api/rtsp/* (legacy) ✅
+// - Events/Whitelist: /api/v1/* ✅
+// - Camera test: /api/v1/camera/test ✅
+//
+// FIX12:
+// - Вернули export apiDownload (нужен System.jsx)
+// - Экспортируем apiGet/apiPost/apiPut (как у тебя было)
 
 export const API_BASE = String(import.meta?.env?.VITE_API_BASE || "").replace(/\/$/, "");
-export const API_PREFIX = "/api/v1";
+
+export const API_V1 = "/api/v1";
+export const API_LEGACY = "/api";
 
 export function apiUrl(path) {
   if (!path.startsWith("/")) path = `/${path}`;
@@ -17,9 +27,7 @@ async function check(r) {
   let text = "";
   try {
     text = await r.text();
-  } catch {
-    /* ignore */
-  }
+  } catch {}
   throw new Error(`${r.status} ${r.statusText}${text ? `: ${text}` : ""}`);
 }
 
@@ -49,56 +57,68 @@ export async function apiPost(path, body) {
   return r.json();
 }
 
-// -------- API methods --------
+// ====== API methods ======
 
+// Events (v1)
 export function getEvents(limit = 30, opts = {}) {
-  const afterTs = opts.after_ts != null ? `&after_ts=${encodeURIComponent(String(opts.after_ts))}` : "";
+  const afterTs =
+    opts.after_ts != null ? `&after_ts=${encodeURIComponent(String(opts.after_ts))}` : "";
   const inc = opts.include_debug ? "&include_debug=1" : "";
-  return apiGet(`${API_PREFIX}/events?limit=${encodeURIComponent(String(limit))}${afterTs}${inc}`);
-}
-
-export function getRtspStatus() {
-  return apiGet(`${API_PREFIX}/rtsp/status`);
-}
-
-export function reloadWhitelist() {
-  return apiPost(`${API_PREFIX}/whitelist/reload`);
-}
-
-export function getWhitelist() {
-  return apiGet(`${API_PREFIX}/whitelist`);
-}
-
-export function putWhitelist(plates) {
-  return apiPut(`${API_PREFIX}/whitelist`, { plates });
-}
-
-export function getSettings() {
-  return apiGet(`${API_PREFIX}/settings`);
-}
-
-export function putSettings(partial) {
-  return apiPut(`${API_PREFIX}/settings`, partial);
-}
-
-export function applySettings() {
-  return apiPost(`${API_PREFIX}/settings/apply`);
-}
-
-export function rtspFrameUrl(ts) {
-  const q = ts ? `?ts=${encodeURIComponent(String(ts))}` : "";
-  return apiUrl(`${API_PREFIX}/rtsp/frame.jpg${q}`);
-}
-
-export function rtspBoxes() {
-  return apiGet(`${API_PREFIX}/rtsp/boxes`);
+  return apiGet(`${API_V1}/events?limit=${encodeURIComponent(String(limit))}${afterTs}${inc}`);
 }
 
 export function eventsStreamUrl(opts = {}) {
   const inc = opts.include_debug ? "?include_debug=1" : "";
-  return apiUrl(`${API_PREFIX}/events/stream${inc}`);
+  return apiUrl(`${API_V1}/events/stream${inc}`);
 }
 
+// RTSP (legacy) — чтобы старая камера жила
+export function getRtspStatus() {
+  return apiGet(`${API_LEGACY}/rtsp/status`);
+}
+
+export function rtspFrameUrl(ts) {
+  const q = ts ? `?ts=${encodeURIComponent(String(ts))}` : "";
+  return apiUrl(`${API_LEGACY}/rtsp/frame.jpg${q}`);
+}
+
+export function rtspBoxes() {
+  return apiGet(`${API_LEGACY}/rtsp/boxes`);
+}
+
+// Whitelist (v1)
+export function reloadWhitelist() {
+  return apiPost(`${API_V1}/whitelist/reload`);
+}
+
+export function getWhitelist() {
+  return apiGet(`${API_V1}/whitelist`);
+}
+
+export function putWhitelist(plates) {
+  return apiPut(`${API_V1}/whitelist`, { plates });
+}
+
+// Settings (v1) — продуктово
+export function getSettings() {
+  return apiGet(`${API_V1}/settings`);
+}
+
+export function putSettings(partial) {
+  // backend ждёт { settings: {...} }
+  return apiPut(`${API_V1}/settings`, { settings: partial });
+}
+
+export function applySettings() {
+  return apiPost(`${API_V1}/settings/apply`);
+}
+
+// Camera test (v1)
+export function cameraTest(rtsp_url, timeout_sec = 6.0) {
+  return apiPost(`${API_V1}/camera/test`, { rtsp_url, timeout_sec });
+}
+
+// Download helper (нужен System.jsx)
 export async function apiDownload(path, filename = "download.bin") {
   const res = await fetch(apiUrl(path));
   await check(res);

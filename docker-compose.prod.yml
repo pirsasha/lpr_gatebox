@@ -2,82 +2,91 @@ name: lpr_gatebox
 
 services:
   gatebox:
-    image: ghcr.io/pirsasha/lpr_gatebox-gatebox:stable
+    image: ghcr.io/pirsasha/lpr_gatebox-gatebox:${TAG:-stable}
     restart: unless-stopped
     ports:
-      - "8080:8080"
+      - "${GATEBOX_PORT:-8080}:8080"
     environment:
-      APP_VERSION: "stable"
+      APP_VERSION: "${TAG:-stable}"
+
       MODEL_PATH: "/models/plate_ocr.onnx"
       SETTINGS_PATH: "/config/settings.json"
 
-      MQTT_ENABLED: "1"
-      MQTT_HOST: "m4.wqtt.ru"
-      MQTT_PORT: "8854"
-      MQTT_USER: "u_46O0EH"
-      MQTT_PASS: "oZYjCpHv"
-      MQTT_TOPIC: "gate/open"
-      # ...
+      MQTT_ENABLED: "${MQTT_ENABLED:-1}"
+      MQTT_HOST: "${MQTT_HOST}"
+      MQTT_PORT: "${MQTT_PORT}"
+      MQTT_USER: "${MQTT_USER}"
+      MQTT_PASS: "${MQTT_PASS}"
+      MQTT_TOPIC: "${MQTT_TOPIC:-gate/open}"
 
     volumes:
       - ./models:/models:ro
       - ./config:/config
 
-    # FIX: чтобы апдейтер/система понимали "готово/не готово"
-    # (не используем wget/curl — только python, он точно есть в образе gatebox)
     healthcheck:
-      test:
-        - CMD-SHELL
-        - |
-          python - <<'PY'
-          import json, urllib.request, sys
-          try:
-              data = urllib.request.urlopen("http://127.0.0.1:8080/api/v1/health", timeout=3).read()
-              j = json.loads(data.decode("utf-8","ignore"))
-              sys.exit(0 if j.get("ok") is True else 1)
-          except Exception:
-              sys.exit(1)
-          PY
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8080/api/v1/health').read(); print('ok')"]
       interval: 10s
       timeout: 5s
-      retries: 12
-      start_period: 30s
+      retries: 15
+
 
   rtsp_worker:
-    image: ghcr.io/pirsasha/lpr_gatebox-rtsp-worker:stable
+    image: ghcr.io/pirsasha/lpr_gatebox-rtsp-worker:${TAG:-stable}
     restart: unless-stopped
+    environment:
+      APP_VERSION: "${TAG:-stable}"
+      INFER_URL: "http://gatebox:8080/infer"
+      SETTINGS_BASE_URL: "http://gatebox:8080"
+      SETTINGS_POLL_SEC: "${SETTINGS_POLL_SEC:-1.5}"
 
-    # FIX: стартовать только когда gatebox реально поднялся
+      RTSP_URL: "${RTSP_URL}"
+
+      READ_FPS: "${READ_FPS:-10}"
+      DET_FPS: "${DET_FPS:-8}"
+      SEND_FPS: "${SEND_FPS:-6}"
+
+      DET_MODEL_PATH: "/models/license-plate-finetune-v1s.pt"
+      DET_CONF: "${DET_CONF:-0.40}"
+      DET_IOU: "${DET_IOU:-0.45}"
+      DET_IMG_SIZE: "${DET_IMG_SIZE:-416}"
+
+      ROI: "${ROI:-}"
+      PLATE_PAD: "${PLATE_PAD:-0.14}"
+
+      RECTIFY: "${RECTIFY:-1}"
+      RECTIFY_W: "${RECTIFY_W:-320}"
+      RECTIFY_H: "${RECTIFY_H:-96}"
+
+      REFINE_INNER_PAD: "${REFINE_INNER_PAD:-0.03}"
+      REFINE_MIN_AREA_RATIO: "${REFINE_MIN_AREA_RATIO:-0.03}"
+
+      DEBUG_SAVE: "${DEBUG_SAVE:-0}"
+
+    volumes:
+      - ./models:/models:ro
+      - ./debug:/work/debug
+
     depends_on:
       gatebox:
         condition: service_healthy
 
-    environment:
-      DET_MODEL_PATH: "/models/license-plate-finetune-v1s.pt"
-      RTSP_URL: "rtsp://192.168.2.102:8554/vorota"
-      INFER_URL: "http://gatebox:8080/infer"
-      # ...
-
-    volumes:
-      - ./models:/models:ro
-      - ./debug:/debug
-      - ./config:/config
 
   updater:
-    image: ghcr.io/pirsasha/lpr_gatebox-updater:stable
+    image: ghcr.io/pirsasha/lpr_gatebox-updater:${TAG:-stable}
     restart: unless-stopped
     ports:
-      - "9010:9010"
-    volumes:
-      - /var/run/docker.sock:/var/run/docker.sock
-      - .:/project
-      - ./config:/config
+      - "${UPDATER_PORT:-9010}:9010"
     environment:
-      PROJECT_DIR: "/project"
-      # FIX: абсолютный путь, чтобы updater никогда не терял файл
-      COMPOSE_FILE: "/project/docker-compose.prod.yml"
-      COMPOSE_PROJECT_NAME: "lpr_gatebox"
-      UPDATE_FALLBACK_BUILD: "0"
-      # (опционально, если ты в updater добавишь ожидание health)
+      PROJECT: "/project"
+      COMPOSE: "/project/docker-compose.prod.yml"
+      PROJECT_NAME: "lpr_gatebox"
+
       HEALTH_URL: "http://gatebox:8080/api/v1/health"
-      HEALTH_TIMEOUT_SEC: "45"
+
+      SERVICES: "gatebox,rtsp_worker,updater"
+
+      # updater сам делает pull/up - ему нужен docker.sock
+    volumes:
+      - ./:/project
+      - /var/run/docker.sock:/var/run/docker.sock
+      - ./config:/config
