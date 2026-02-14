@@ -949,7 +949,74 @@ class Handler(BaseHTTPRequestHandler):
 
         self._json(404, {"error": "not found"})
 
-    def do_GET(self):
+        def do_GET(self):
+        # -------------------------------------------------
+        # NEW: compatibility endpoints for gatebox UI
+        # -------------------------------------------------
+
+        # root: простая проверка "жив ли updater"
+        if self.path == "/":
+            self._json(
+                200,
+                {
+                    "ok": True,
+                    "service": "updater",
+                    "version": STATE.get("version"),
+                    "self": STATE.get("self"),
+                    "endpoints": ["/check", "/status", "/log", "/metrics", "/start", "/version"],
+                },
+            )
+            return
+
+        # /health: совместимость (многие ожидают health)
+        if self.path == "/health":
+            self._json(200, {"ok": True})
+            return
+
+        # /check: ВАЖНО — именно сюда ходит gatebox UI
+        # gatebox ранее дергал http://updater:9010/check и падал на 404 → 502 в UI
+        if self.path == "/check":
+            self._json(
+                200,
+                {
+                    "ok": True,
+                    "running": STATE.get("running"),
+                    "step": STATE.get("step"),
+                    "last_result": STATE.get("last_result"),
+                    "last_error": STATE.get("last_error"),
+                    "last_check": STATE.get("last_check"),
+                    "last_action": STATE.get("last_action"),
+                },
+            )
+            return
+
+        # /version: удобная диагностика на странице "Система"
+        if self.path == "/version":
+            self._json(
+                200,
+                {
+                    "ok": True,
+                    "service": "updater",
+                    "version": STATE.get("version"),
+                    "self": STATE.get("self"),
+                    "project_dir": PROJECT_DIR,
+                    "compose_file": COMPOSE_FILE,
+                    "config_dir": CONFIG_DIR,
+                    "project_name": COMPOSE_PROJECT_NAME,
+                    "services": UPDATE_SERVICES,
+                    "health_url": HEALTH_URL,
+                    "fallback_build": FALLBACK_BUILD,
+                    "compose_effective": STATE.get("compose_effective"),
+                    "compose_effective_persist": STATE.get("compose_effective_persist"),
+                    "rollback_path": str(ROLLBACK_PATH),
+                },
+            )
+            return
+
+        # -------------------------------------------------
+        # Existing endpoints (KEEP)
+        # -------------------------------------------------
+
         if self.path == "/status":
             self._json(200, STATE)
             return
