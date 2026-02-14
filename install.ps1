@@ -1,134 +1,121 @@
-#!/usr/bin/env bash
-set -euo pipefail
-
 # =========================================================
-# Файл: install.sh
+# Файл: install.ps1
 # Проект: LPR GateBox
-# Версия: v0.3.9-installer
+# Версия: v0.3.11-installer
 # Автор: Александр
 # Что сделано:
-# - Кросс-платформенный установщик (Linux/macOS)
-# - Цветной UI, логотип, шаги, проверки
+# - Кросс-платформенный установщик (Windows)
+# - Цветной UI, логотип, мастер-настройка
 # - Команды: install/update/uninstall/status/logs
+# - NEW: создаёт config\live и debug
+# - NEW: проверка volume ./config:/config у rtsp_worker (snapshot contract)
+# - NEW: soft-check snapshot endpoint /api/rtsp/frame.jpg
 # =========================================================
 
-# ---------- UI (colors) ----------
-RED="\033[31m"; GREEN="\033[32m"; YELLOW="\033[33m"; BLUE="\033[34m"; MAG="\033[35m"; CYAN="\033[36m"; DIM="\033[2m"; RESET="\033[0m"
-BOLD="\033[1m"
+param(
+  [ValidateSet("install","update","uninstall","status","logs")]
+  [string]$Action = "install",
 
-logo() {
-  echo -e "${CYAN}${BOLD}"
-  cat <<'EOF'
-   _     ____  ____     ____       _       ____            
-  | |   |  _ \|  _ \   / ___| __ _ | |_ ___| __ )  _____  __
-  | |   | |_) | |_) | | |  _ / _` || __/ _ \  _ \ / _ \ \/ /
-  | |___|  __/|  _ <  | |_| | (_| || ||  __/ |_) | (_) >  < 
-  |_____|_|   |_| \_\  \____|\__,_| \__\___|____/ \___/_/\_\
-EOF
-  echo -e "${RESET}${DIM}Установщик LPR GateBox (Linux/macOS). Русский интерфейс + цвета.${RESET}"
-  echo
+  [string]$Dir = "$env:USERPROFILE\lpr_gatebox",
+  [string]$RepoUrl = "https://github.com/pirsasha/lpr_gatebox.git"
+)
+
+$ErrorActionPreference = "Stop"
+
+function Write-Ok($m){ Write-Host "✓ $m" -ForegroundColor Green }
+function Write-Info($m){ Write-Host "→ $m" -ForegroundColor Cyan }
+function Write-Warn($m){ Write-Host "! $m" -ForegroundColor Yellow }
+function Write-Err($m){ Write-Host "✗ $m" -ForegroundColor Red }
+
+function Logo {
+  Write-Host ""
+  Write-Host " _     ____  ____     ____       _       ____            " -ForegroundColor Cyan
+  Write-Host "| |   |  _ \|  _ \   / ___| __ _ | |_ ___| __ )  _____  __" -ForegroundColor Cyan
+  Write-Host "| |   | |_) | |_) | | |  _ / _` || __/ _ \  _ \ / _ \ \/ /" -ForegroundColor Cyan
+  Write-Host "| |___|  __/|  _ <  | |_| | (_| || ||  __/ |_) | (_) >  < " -ForegroundColor Cyan
+  Write-Host "|_____|_|   |_| \_\  \____|\__,_| \__\___|____/ \___/_/\_\" -ForegroundColor Cyan
+  Write-Host ""
+  Write-Host "Установщик LPR GateBox (Windows). Русский интерфейс + цвета." -ForegroundColor DarkGray
+  Write-Host ""
 }
 
-ok()   { echo -e "${GREEN}✓${RESET} $*"; }
-warn() { echo -e "${YELLOW}!${RESET} $*"; }
-err()  { echo -e "${RED}✗${RESET} $*"; }
-info() { echo -e "${BLUE}→${RESET} $*"; }
-
-die() { err "$*"; exit 1; }
-
-need_cmd() {
-  command -v "$1" >/dev/null 2>&1 || die "Не найдено: $1. Установи и повтори."
+function Need-Cmd($name){
+  if (-not (Get-Command $name -ErrorAction SilentlyContinue)) {
+    throw "Не найдено: $name. Установи и повтори."
+  }
 }
 
-# ---------- Defaults ----------
-ACTION="${1:-install}"
-REPO_URL_DEFAULT="https://github.com/pirsasha/lpr_gatebox.git"
-DIR_DEFAULT="$HOME/lpr_gatebox"
-COMPOSE_FILE="docker-compose.prod.yml"
-ENV_FILE=".env"
-CFG_DIR="config"
-MODELS_DIR="models"
-
-# ---------- Helpers ----------
-is_root() { [[ "${EUID:-$(id -u)}" -eq 0 ]]; }
-
-detect_ip() {
-  # best-effort LAN ip
-  local ip=""
-  ip="$(ip route get 1.1.1.1 2>/dev/null | awk '/src/ {for(i=1;i<=NF;i++) if($i=="src"){print $(i+1); exit}}' || true)"
-  if [[ -z "$ip" ]]; then
-    ip="$(hostname -I 2>/dev/null | awk '{print $1}' || true)"
-  fi
-  echo "${ip:-127.0.0.1}"
+function Compose-Cmd {
+  try { docker compose version | Out-Null; return "docker compose" } catch {}
+  try { docker-compose version | Out-Null; return "docker-compose" } catch {}
+  throw "Не найден docker compose. Нужен Docker Desktop (docker compose)."
 }
 
-compose_cmd() {
-  # Use docker compose plugin if available
-  if docker compose version >/dev/null 2>&1; then
-    echo "docker compose"
-  elif command -v docker-compose >/dev/null 2>&1; then
-    echo "docker-compose"
-  else
-    die "Не найден docker compose. Нужен 'docker compose' или 'docker-compose'."
-  fi
+function Ensure-Repo($dir,$url){
+  if (Test-Path "$dir\.git") { Write-Ok "Репозиторий уже есть: $dir"; return }
+  Need-Cmd git
+  Write-Info "Клонирую репозиторий: $url"
+  git clone $url $dir
+  Write-Ok "Клонирование завершено"
 }
 
-ensure_repo() {
-  local dir="$1"
-  local url="$2"
-
-  if [[ -d "$dir/.git" ]]; then
-    ok "Репозиторий уже есть: $dir"
-    return 0
-  fi
-
-  info "Клонирую репозиторий: $url"
-  need_cmd git
-  git clone "$url" "$dir"
-  ok "Клонирование завершено"
+function Check-SnapshotContract($composePath){
+  $txt = Get-Content $composePath -Raw
+  # грубая, но практичная проверка: в секции rtsp_worker должно встретиться "./config:/config"
+  if ($txt -notmatch "(?s)rtsp_worker:.*?volumes:.*?\./config:/config") {
+    Write-Warn "ВАЖНО: в docker-compose.prod.yml у rtsp_worker нет volume ./config:/config."
+    Write-Warn "Иначе snapshot в UI будет 404 (gatebox не видит /config/live/frame.jpg)."
+    Write-Warn "Исправление: добавь в rtsp_worker -> volumes: - ./config:/config"
+  } else {
+    Write-Ok "Проверка snapshot: rtsp_worker видит ./config (OK)"
+  }
 }
 
-ensure_examples() {
-  local dir="$1"
-  cd "$dir"
+function Ensure-Examples($dir){
+  $compose = Join-Path $dir "docker-compose.prod.yml"
+  if (-not (Test-Path $compose)) { throw "Не найден docker-compose.prod.yml в $dir" }
 
-  [[ -f "$COMPOSE_FILE" ]] || die "Не найден $COMPOSE_FILE в $dir"
+  $envFile = Join-Path $dir ".env"
+  if (-not (Test-Path $envFile)) {
+    $envExample = Join-Path $dir ".env.example"
+    if (Test-Path $envExample) {
+      Copy-Item $envExample $envFile
+      Write-Ok "Создан .env из .env.example"
+    } else {
+      Write-Warn "Не найден .env.example — создам минимальный .env"
+      @(
+        "TAG=stable",
+        "GATEBOX_PORT=8080",
+        "UPDATER_PORT=9010",
+        "RTSP_URL=",
+        "MQTT_ENABLED=0",
+        "MQTT_HOST=",
+        "MQTT_PORT=1883",
+        "MQTT_USER=",
+        "MQTT_PASS=",
+        "MQTT_TOPIC=gate/open"
+      ) | Set-Content -Encoding UTF8 $envFile
+      Write-Ok "Создан .env (минимальный)"
+    }
+  } else {
+    Write-Ok ".env уже существует — не трогаю"
+  }
 
-  # create .env from .env.example
-  if [[ ! -f "$ENV_FILE" ]]; then
-    if [[ -f ".env.example" ]]; then
-      cp ".env.example" "$ENV_FILE"
-      ok "Создан $ENV_FILE из .env.example"
-    else
-      warn "Не найден .env.example — создам минимальный .env"
-      cat > "$ENV_FILE" <<EOF
-TAG=stable
-GATEBOX_PORT=8080
-UPDATER_PORT=9010
-RTSP_URL=
-MQTT_ENABLED=0
-MQTT_HOST=
-MQTT_PORT=1883
-MQTT_USER=
-MQTT_PASS=
-MQTT_TOPIC=gate/open
-EOF
-      ok "Создан $ENV_FILE (минимальный)"
-    fi
-  else
-    ok "$ENV_FILE уже существует — не трогаю"
-  fi
+  $cfgDir = Join-Path $dir "config"
+  New-Item -ItemType Directory $cfgDir -Force | Out-Null
+  New-Item -ItemType Directory (Join-Path $cfgDir "live") -Force | Out-Null
+  New-Item -ItemType Directory (Join-Path $dir "debug") -Force | Out-Null
+  Write-Ok "Созданы папки: config, config\live, debug"
 
-  # config examples
-  mkdir -p "$CFG_DIR"
-
-  if [[ ! -f "$CFG_DIR/settings.json" ]]; then
-    if [[ -f "$CFG_DIR/settings.example.json" ]]; then
-      cp "$CFG_DIR/settings.example.json" "$CFG_DIR/settings.json"
-      ok "Создан config/settings.json из example"
-    else
-      warn "Нет settings.example.json — создам базовый config/settings.json"
-      cat > "$CFG_DIR/settings.json" <<'EOF'
+  $settings = Join-Path $cfgDir "settings.json"
+  if (-not (Test-Path $settings)) {
+    $settingsEx = Join-Path $cfgDir "settings.example.json"
+    if (Test-Path $settingsEx) {
+      Copy-Item $settingsEx $settings
+      Write-Ok "Создан config\settings.json из example"
+    } else {
+      Write-Warn "Нет settings.example.json — создам базовый settings.json"
+      @'
 {
   "ocr": {
     "ocr_orient_try": 1,
@@ -143,262 +130,248 @@ EOF
   },
   "runtime": { "debug_log": 0 }
 }
-EOF
-      ok "Создан config/settings.json (базовый)"
-    fi
-  else
-    ok "config/settings.json уже существует — не трогаю"
-  fi
-
-  if [[ ! -f "$CFG_DIR/whitelist.json" ]]; then
-    if [[ -f "$CFG_DIR/whitelist.example.json" ]]; then
-      cp "$CFG_DIR/whitelist.example.json" "$CFG_DIR/whitelist.json"
-      ok "Создан config/whitelist.json из example"
-    else
-      warn "Нет whitelist.example.json — создам базовый config/whitelist.json"
-      cat > "$CFG_DIR/whitelist.json" <<'EOF'
-{ "enabled": 0, "plates": [] }
-EOF
-      ok "Создан config/whitelist.json (базовый)"
-    fi
-  else
-    ok "config/whitelist.json уже существует — не трогаю"
-  fi
-
-  # models presence check
-  if [[ ! -d "$MODELS_DIR" ]]; then
-    warn "Папка models отсутствует. Убедись, что модели лежат в ./models"
-  else
-    ok "models/ найден"
-  fi
-}
-
-edit_env_interactive() {
-  local dir="$1"
-  cd "$dir"
-
-  local tag rtsp mqtt_enabled mqtt_host mqtt_port mqtt_user mqtt_pass mqtt_topic
-  echo -e "${BOLD}Настройка .env (можно просто нажимать Enter)${RESET}"
-  echo
-
-  tag="$(grep -E '^TAG=' "$ENV_FILE" | head -n1 | cut -d= -f2- || true)"
-  read -rp "Версия (TAG) [${tag:-stable}] : " input || true
-  if [[ -n "${input:-}" ]]; then
-    tag="$input"
-  else
-    tag="${tag:-stable}"
-  fi
-
-  rtsp="$(grep -E '^RTSP_URL=' "$ENV_FILE" | head -n1 | cut -d= -f2- || true)"
-  read -rp "RTSP_URL [${rtsp:-}] : " input || true
-  if [[ -n "${input:-}" ]]; then rtsp="$input"; fi
-
-  mqtt_enabled="$(grep -E '^MQTT_ENABLED=' "$ENV_FILE" | head -n1 | cut -d= -f2- || true)"
-  read -rp "Включить MQTT? (0/1) [${mqtt_enabled:-0}] : " input || true
-  if [[ -n "${input:-}" ]]; then mqtt_enabled="$input"; else mqtt_enabled="${mqtt_enabled:-0}"; fi
-
-  if [[ "$mqtt_enabled" == "1" ]]; then
-    mqtt_host="$(grep -E '^MQTT_HOST=' "$ENV_FILE" | head -n1 | cut -d= -f2- || true)"
-    read -rp "MQTT_HOST [${mqtt_host:-}] : " input || true
-    if [[ -n "${input:-}" ]]; then mqtt_host="$input"; fi
-
-    mqtt_port="$(grep -E '^MQTT_PORT=' "$ENV_FILE" | head -n1 | cut -d= -f2- || true)"
-    read -rp "MQTT_PORT [${mqtt_port:-1883}] : " input || true
-    if [[ -n "${input:-}" ]]; then mqtt_port="$input"; else mqtt_port="${mqtt_port:-1883}"; fi
-
-    mqtt_user="$(grep -E '^MQTT_USER=' "$ENV_FILE" | head -n1 | cut -d= -f2- || true)"
-    read -rp "MQTT_USER [${mqtt_user:-}] : " input || true
-    if [[ -n "${input:-}" ]]; then mqtt_user="$input"; fi
-
-    mqtt_pass="$(grep -E '^MQTT_PASS=' "$ENV_FILE" | head -n1 | cut -d= -f2- || true)"
-    read -rsp "MQTT_PASS [скрыто] (Enter оставить как есть): " input || true
-    echo
-    if [[ -n "${input:-}" ]]; then mqtt_pass="$input"; fi
-
-    mqtt_topic="$(grep -E '^MQTT_TOPIC=' "$ENV_FILE" | head -n1 | cut -d= -f2- || true)"
-    read -rp "MQTT_TOPIC [${mqtt_topic:-gate/open}] : " input || true
-    if [[ -n "${input:-}" ]]; then mqtt_topic="$input"; else mqtt_topic="${mqtt_topic:-gate/open}"; fi
-  fi
-
-  # apply edits safely
-  set_kv() {
-    local key="$1"; local value="$2"
-    if grep -qE "^${key}=" "$ENV_FILE"; then
-      sed -i.bak "s|^${key}=.*|${key}=${value}|" "$ENV_FILE"
-    else
-      echo "${key}=${value}" >> "$ENV_FILE"
-    fi
+'@ | Set-Content -Encoding UTF8 $settings
+      Write-Ok "Создан config\settings.json (базовый)"
+    }
+  } else {
+    Write-Ok "config\settings.json уже существует — не трогаю"
   }
 
-  set_kv "TAG" "$tag"
-  set_kv "RTSP_URL" "$rtsp"
-  set_kv "MQTT_ENABLED" "$mqtt_enabled"
+  $wl = Join-Path $cfgDir "whitelist.json"
+  if (-not (Test-Path $wl)) {
+    $wlEx = Join-Path $cfgDir "whitelist.example.json"
+    if (Test-Path $wlEx) {
+      Copy-Item $wlEx $wl
+      Write-Ok "Создан config\whitelist.json из example"
+    } else {
+      '{ "enabled": 0, "plates": [] }' | Set-Content -Encoding UTF8 $wl
+      Write-Ok "Создан config\whitelist.json (базовый)"
+    }
+  } else {
+    Write-Ok "config\whitelist.json уже существует — не трогаю"
+  }
 
-  if [[ "$mqtt_enabled" == "1" ]]; then
-    set_kv "MQTT_HOST" "${mqtt_host:-}"
-    set_kv "MQTT_PORT" "${mqtt_port:-1883}"
-    set_kv "MQTT_USER" "${mqtt_user:-}"
-    set_kv "MQTT_PASS" "${mqtt_pass:-}"
-    set_kv "MQTT_TOPIC" "${mqtt_topic:-gate/open}"
-  fi
+  $modelsDir = Join-Path $dir "models"
+  if (-not (Test-Path $modelsDir)) { Write-Warn "Папка models отсутствует. Убедись, что модели лежат в .\models" }
+  else { Write-Ok "models\ найден" }
 
-  rm -f "$ENV_FILE.bak" || true
-  ok ".env обновлён"
+  Check-SnapshotContract $compose
 }
 
-pull_and_up() {
-  local dir="$1"
-  cd "$dir"
-
-  local dc; dc="$(compose_cmd)"
-  info "Pull образов (это может занять время)..."
-  $dc -f "$COMPOSE_FILE" pull
-  ok "Образы загружены"
-
-  info "Запуск сервисов..."
-  $dc -f "$COMPOSE_FILE" up -d
-  ok "Сервисы запущены"
+function Set-EnvKV($envFile,$key,$value){
+  $lines = Get-Content $envFile -ErrorAction SilentlyContinue
+  if ($lines -match "^$key=") {
+    $lines = $lines | ForEach-Object { $_ -replace "^$key=.*", "$key=$value" }
+  } else {
+    $lines += "$key=$value"
+  }
+  $lines | Set-Content -Encoding UTF8 $envFile
 }
 
-health_check() {
-  local ip port
-  ip="$(detect_ip)"
-  port="$(grep -E '^GATEBOX_PORT=' "$ENV_FILE" | head -n1 | cut -d= -f2- || echo "8080")"
+function Edit-EnvInteractive($dir){
+  $envFile = Join-Path $dir ".env"
+  $content = Get-Content $envFile
 
-  info "Проверка health: http://${ip}:${port}/api/v1/health"
-  # best-effort curl/wget
-  if command -v curl >/dev/null 2>&1; then
-    curl -fsS "http://${ip}:${port}/api/v1/health" >/dev/null && ok "health OK" || warn "health пока не ответил (проверь логи)"
-  elif command -v wget >/dev/null 2>&1; then
-    wget -qO- "http://${ip}:${port}/api/v1/health" >/dev/null && ok "health OK" || warn "health пока не ответил (проверь логи)"
-  else
-    warn "Нет curl/wget — пропускаю health-check"
-  fi
+  $getVal = { param($k) (($content | Where-Object { $_ -like "$k=*" } | Select-Object -First 1) -replace "^$k=","") }
 
-  echo
-  echo -e "${GREEN}${BOLD}Готово!${RESET}"
-  echo -e "UI: ${CYAN}http://${ip}:${port}${RESET}"
-  echo -e "${DIM}Логи: ./install.sh logs${RESET}"
+  Write-Host "Настройка .env (можно просто нажимать Enter)" -ForegroundColor White
+  Write-Host ""
+
+  $tag = & $getVal "TAG"
+  $in = Read-Host "Версия (TAG) [$($tag ?? "stable")]"
+  if ($in) { $tag = $in } elseif (-not $tag) { $tag = "stable" }
+
+  $rtsp = & $getVal "RTSP_URL"
+  $in = Read-Host "RTSP_URL [$rtsp]"
+  if ($in) { $rtsp = $in }
+
+  $mqttEnabled = & $getVal "MQTT_ENABLED"
+  $in = Read-Host "Включить MQTT? (0/1) [$($mqttEnabled ?? "0")]"
+  if ($in) { $mqttEnabled = $in } elseif (-not $mqttEnabled) { $mqttEnabled = "0" }
+
+  Set-EnvKV $envFile "TAG" $tag
+  Set-EnvKV $envFile "RTSP_URL" $rtsp
+  Set-EnvKV $envFile "MQTT_ENABLED" $mqttEnabled
+
+  if ($mqttEnabled -eq "1") {
+    $mqttHost = & $getVal "MQTT_HOST"
+    $in = Read-Host "MQTT_HOST [$mqttHost]"
+    if ($in) { $mqttHost = $in }
+
+    $mqttPort = & $getVal "MQTT_PORT"
+    $in = Read-Host "MQTT_PORT [$($mqttPort ?? "1883")]"
+    if ($in) { $mqttPort = $in } elseif (-not $mqttPort) { $mqttPort = "1883" }
+
+    $mqttUser = & $getVal "MQTT_USER"
+    $in = Read-Host "MQTT_USER [$mqttUser]"
+    if ($in) { $mqttUser = $in }
+
+    Write-Warn "Пароль будет сохранён в .env (обычно это нормально для локальной установки)."
+    $sec = Read-Host "MQTT_PASS (ввод скрыт)" -AsSecureString
+    $bstr = [Runtime.InteropServices.Marshal]::SecureStringToBSTR($sec)
+    $mqttPass = [Runtime.InteropServices.Marshal]::PtrToStringAuto($bstr)
+
+    $mqttTopic = & $getVal "MQTT_TOPIC"
+    $in = Read-Host "MQTT_TOPIC [$($mqttTopic ?? "gate/open")]"
+    if ($in) { $mqttTopic = $in } elseif (-not $mqttTopic) { $mqttTopic = "gate/open" }
+
+    Set-EnvKV $envFile "MQTT_HOST" $mqttHost
+    Set-EnvKV $envFile "MQTT_PORT" $mqttPort
+    Set-EnvKV $envFile "MQTT_USER" $mqttUser
+    Set-EnvKV $envFile "MQTT_PASS" $mqttPass
+    Set-EnvKV $envFile "MQTT_TOPIC" $mqttTopic
+  }
+
+  Write-Ok ".env обновлён"
 }
 
-do_install() {
-  logo
+function Pull-And-Up($dir){
+  $dc = Compose-Cmd
+  Push-Location $dir
+  Write-Info "Pull образов (это может занять время)..."
+  if ($dc -eq "docker compose") { docker compose -f docker-compose.prod.yml pull }
+  else { docker-compose -f docker-compose.prod.yml pull }
+  Write-Ok "Образы загружены"
 
-  need_cmd docker
-  # compose plugin check inside compose_cmd
-  compose_cmd >/dev/null
-
-  local repo_url="$REPO_URL_DEFAULT"
-  local dir="$DIR_DEFAULT"
-
-  echo -e "${BOLD}Параметры установки${RESET}"
-  read -rp "Папка установки [$dir] : " input || true
-  [[ -n "${input:-}" ]] && dir="$input"
-
-  read -rp "Git репозиторий [$repo_url] : " input || true
-  [[ -n "${input:-}" ]] && repo_url="$input"
-
-  ensure_repo "$dir" "$repo_url"
-  ensure_examples "$dir"
-
-  echo
-  read -rp "Открыть мастер-настройку .env сейчас? (y/N): " input || true
-  if [[ "${input:-}" =~ ^[Yy]$ ]]; then
-    edit_env_interactive "$dir"
-  else
-    warn "Пропускаю мастер — ты можешь отредактировать $dir/.env вручную"
-  fi
-
-  pull_and_up "$dir"
-  cd "$dir"
-  health_check
+  Write-Info "Запуск сервисов..."
+  if ($dc -eq "docker compose") { docker compose -f docker-compose.prod.yml up -d }
+  else { docker-compose -f docker-compose.prod.yml up -d }
+  Write-Ok "Сервисы запущены"
+  Pop-Location
 }
 
-do_update() {
-  logo
-  need_cmd docker
-  compose_cmd >/dev/null
+function Health($dir){
+  $envFile = Join-Path $dir ".env"
+  $gateboxPort = (Get-Content $envFile | Where-Object { $_ -like "GATEBOX_PORT=*" } | Select-Object -First 1) -replace "^GATEBOX_PORT=",""
+  if (-not $gateboxPort) { $gateboxPort = "8080" }
 
-  local dir="$DIR_DEFAULT"
-  read -rp "Папка установки [$dir] : " input || true
-  [[ -n "${input:-}" ]] && dir="$input"
-  [[ -f "$dir/$COMPOSE_FILE" ]] || die "Не найден $COMPOSE_FILE в $dir"
+  $ip = (Get-NetIPAddress -AddressFamily IPv4 -ErrorAction SilentlyContinue |
+    Where-Object { $_.IPAddress -notlike "169.254.*" -and $_.IPAddress -ne "127.0.0.1" } |
+    Select-Object -First 1).IPAddress
+  if (-not $ip) { $ip = "127.0.0.1" }
 
-  cd "$dir"
-  local dc; dc="$(compose_cmd)"
+  $healthUrl = "http://$ip`:$gateboxPort/api/v1/health"
+  Write-Info "Проверка health: $healthUrl"
+  try { Invoke-RestMethod $healthUrl -TimeoutSec 3 | Out-Null; Write-Ok "health OK" }
+  catch { Write-Warn "health пока не ответил (проверь логи)" }
 
-  info "Pull новых образов..."
-  $dc -f "$COMPOSE_FILE" pull
-  info "Recreate..."
-  $dc -f "$COMPOSE_FILE" up -d --force-recreate --remove-orphans
-  ok "Обновление завершено"
-  health_check
+  $snapUrl = "http://$ip`:$gateboxPort/api/rtsp/frame.jpg"
+  Write-Info "Проверка snapshot: $snapUrl"
+  try {
+    Invoke-WebRequest $snapUrl -TimeoutSec 3 | Out-Null
+    Write-Ok "Snapshot доступен: /api/rtsp/frame.jpg"
+  } catch {
+    Write-Warn "Snapshot пока недоступен (/api/rtsp/frame.jpg). Если в UI 404 — проверь volume ./config:/config у rtsp_worker и gatebox."
+  }
+
+  Write-Host ""
+  Write-Host "Готово!" -ForegroundColor Green
+  Write-Host "UI: http://$ip`:$gateboxPort" -ForegroundColor Cyan
+  Write-Host "Логи: .\install.ps1 -Action logs" -ForegroundColor DarkGray
 }
 
-do_uninstall() {
-  logo
-  need_cmd docker
-  compose_cmd >/dev/null
+function Do-Install {
+  Logo
+  Need-Cmd docker
+  Need-Cmd git
+  [void](Compose-Cmd)
 
-  local dir="$DIR_DEFAULT"
-  read -rp "Папка установки [$dir] : " input || true
-  [[ -n "${input:-}" ]] && dir="$input"
+  $in = Read-Host "Папка установки [$Dir]"
+  if ($in) { $script:Dir = $in }
 
-  if [[ ! -f "$dir/$COMPOSE_FILE" ]]; then
-    warn "Не найден $COMPOSE_FILE в $dir — попробую удалить контейнеры по имени проекта"
-  else
-    cd "$dir"
-    local dc; dc="$(compose_cmd)"
-    info "Останавливаю и удаляю сервисы + volumes..."
-    $dc -f "$COMPOSE_FILE" down --remove-orphans --volumes
-    ok "Сервисы удалены"
-  fi
+  $in = Read-Host "Git репозиторий [$RepoUrl]"
+  if ($in) { $script:RepoUrl = $in }
 
-  read -rp "Удалить папку $dir полностью? (y/N): " input || true
-  if [[ "${input:-}" =~ ^[Yy]$ ]]; then
-    rm -rf "$dir"
-    ok "Папка удалена"
-  else
-    warn "Папка оставлена: $dir"
-  fi
+  Ensure-Repo $Dir $RepoUrl
+  Ensure-Examples $Dir
+
+  $in = Read-Host "Открыть мастер-настройку .env сейчас? (y/N)"
+  if ($in -match "^[Yy]$") { Edit-EnvInteractive $Dir }
+  else { Write-Warn "Пропускаю мастер — отредактируй $Dir\.env при необходимости" }
+
+  Pull-And-Up $Dir
+  Health $Dir
 }
 
-do_status() {
-  logo
-  local dir="$DIR_DEFAULT"
-  read -rp "Папка установки [$dir] : " input || true
-  [[ -n "${input:-}" ]] && dir="$input"
-  [[ -f "$dir/$COMPOSE_FILE" ]] || die "Не найден $COMPOSE_FILE в $dir"
-  cd "$dir"
-  local dc; dc="$(compose_cmd)"
-  $dc -f "$COMPOSE_FILE" ps
+function Do-Update {
+  Logo
+  Need-Cmd docker
+  [void](Compose-Cmd)
+
+  $in = Read-Host "Папка установки [$Dir]"
+  if ($in) { $script:Dir = $in }
+
+  $compose = Join-Path $Dir "docker-compose.prod.yml"
+  if (-not (Test-Path $compose)) { throw "Не найден docker-compose.prod.yml в $Dir" }
+  Check-SnapshotContract $compose
+
+  Push-Location $Dir
+  $dc = Compose-Cmd
+  Write-Info "Pull новых образов..."
+  if ($dc -eq "docker compose") { docker compose -f docker-compose.prod.yml pull }
+  else { docker-compose -f docker-compose.prod.yml pull }
+
+  Write-Info "Recreate..."
+  if ($dc -eq "docker compose") { docker compose -f docker-compose.prod.yml up -d --force-recreate --remove-orphans }
+  else { docker-compose -f docker-compose.prod.yml up -d --force-recreate --remove-orphans }
+  Pop-Location
+
+  Write-Ok "Обновление завершено"
+  Health $Dir
 }
 
-do_logs() {
-  logo
-  local dir="$DIR_DEFAULT"
-  read -rp "Папка установки [$dir] : " input || true
-  [[ -n "${input:-}" ]] && dir="$input"
-  [[ -f "$dir/$COMPOSE_FILE" ]] || die "Не найден $COMPOSE_FILE в $dir"
-  cd "$dir"
-  local dc; dc="$(compose_cmd)"
-  $dc -f "$COMPOSE_FILE" logs -f --tail 200 gatebox rtsp_worker updater
+function Do-Uninstall {
+  Logo
+  Need-Cmd docker
+  [void](Compose-Cmd)
+
+  $in = Read-Host "Папка установки [$Dir]"
+  if ($in) { $script:Dir = $in }
+
+  $compose = Join-Path $Dir "docker-compose.prod.yml"
+  if (Test-Path $compose) {
+    Push-Location $Dir
+    $dc = Compose-Cmd
+    Write-Info "Останавливаю и удаляю сервисы + volumes..."
+    if ($dc -eq "docker compose") { docker compose -f docker-compose.prod.yml down --remove-orphans --volumes }
+    else { docker-compose -f docker-compose.prod.yml down --remove-orphans --volumes }
+    Pop-Location
+    Write-Ok "Сервисы удалены"
+  } else {
+    Write-Warn "compose-файл не найден — пропускаю down"
+  }
+
+  $in = Read-Host "Удалить папку $Dir полностью? (y/N)"
+  if ($in -match "^[Yy]$") { Remove-Item -Recurse -Force $Dir; Write-Ok "Папка удалена" }
+  else { Write-Warn "Папка оставлена: $Dir" }
 }
 
-case "$ACTION" in
-  install)   do_install ;;
-  update)    do_update ;;
-  uninstall) do_uninstall ;;
-  status)    do_status ;;
-  logs)      do_logs ;;
-  *)
-    logo
-    echo "Использование:"
-    echo "  ./install.sh install   # установка"
-    echo "  ./install.sh update    # обновление"
-    echo "  ./install.sh uninstall # удаление"
-    echo "  ./install.sh status    # статус"
-    echo "  ./install.sh logs      # логи"
-    exit 1
-    ;;
-esac
+function Do-Status {
+  Logo
+  $in = Read-Host "Папка установки [$Dir]"
+  if ($in) { $script:Dir = $in }
+  Push-Location $Dir
+  $dc = Compose-Cmd
+  if ($dc -eq "docker compose") { docker compose -f docker-compose.prod.yml ps }
+  else { docker-compose -f docker-compose.prod.yml ps }
+  Pop-Location
+}
+
+function Do-Logs {
+  Logo
+  $in = Read-Host "Папка установки [$Dir]"
+  if ($in) { $script:Dir = $in }
+  Push-Location $Dir
+  $dc = Compose-Cmd
+  if ($dc -eq "docker compose") { docker compose -f docker-compose.prod.yml logs -f --tail 200 gatebox rtsp_worker updater }
+  else { docker-compose -f docker-compose.prod.yml logs -f --tail 200 gatebox rtsp_worker updater }
+  Pop-Location
+}
+
+switch ($Action) {
+  "install"   { Do-Install }
+  "update"    { Do-Update }
+  "uninstall" { Do-Uninstall }
+  "status"    { Do-Status }
+  "logs"      { Do-Logs }
+}
