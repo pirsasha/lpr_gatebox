@@ -1,13 +1,14 @@
 # =========================================================
 # Файл: updater/app.py
 # Проект: LPR GateBox
-# Версия: v0.3.16-updater-check-compat
+# Версия: v0.3.20-updater-post-check-compat
 # Изменено: 2026-02-14
 #
 # Что сделано:
-# - FIX: добавлен endpoint GET /check (совместимость с gatebox UI /api/v1/update/check -> updater:9010/check)
-# - NEW: добавлены GET / (ping), /health (ping), /version (диагностика)
-# - KEEP: текущая логика обновлений, effective compose persist и helper net-heal без изменений
+# - FIX: добавлены совместимые endpoints updater для UI/gatebox:
+#        GET/POST /check, GET/POST /status
+# - NEW: GET / (root) + GET /health для простого "жив ли updater"
+# - KEEP: /log, /metrics и текущая логика update/rollback/net-heal без изменений
 # =========================================================
 
 from __future__ import annotations
@@ -44,10 +45,6 @@ STATE: Dict[str, Any] = {
     "last_action": None,
     "compose_effective": None,
     "compose_effective_persist": None,
-
-    # NEW: полезно для UI/диагностики
-    "version": os.environ.get("APP_VERSION") or os.environ.get("TAG") or "unknown",
-    "self": os.environ.get("HOSTNAME") or "updater",
 }
 LOG: List[str] = []
 
@@ -62,7 +59,9 @@ FALLBACK_BUILD = os.environ.get("UPDATE_FALLBACK_BUILD", "0") == "1"
 HEALTH_URL = os.environ.get("HEALTH_URL", "").strip()
 HEALTH_TIMEOUT_SEC = float(os.environ.get("HEALTH_TIMEOUT_SEC", "60") or "60")
 
-UPDATE_SERVICES = [s.strip() for s in os.environ.get("UPDATE_SERVICES", "gatebox,rtsp_worker").split(",") if s.strip()]
+UPDATE_SERVICES = [
+    s.strip() for s in os.environ.get("UPDATE_SERVICES", "gatebox,rtsp_worker").split(",") if s.strip()
+]
 if not UPDATE_SERVICES:
     UPDATE_SERVICES = ["gatebox", "rtsp_worker"]
 
@@ -183,8 +182,7 @@ def _read_proc_stat() -> Optional[Tuple[int, int]]:
         if not line.startswith("cpu "):
             return None
         parts = line.split()
-        # cpu user nice system idle iowait irq softirq steal guest guest_nice
-        nums = [int(x) for x in parts[1:] if x.isdigit() or (x and x[0].isdigit())]
+        nums = [int(x) for x in parts[1:] if x and x[0].isdigit()]
         if len(nums) < 4:
             return None
         user, nice, system, idle = nums[0], nums[1], nums[2], nums[3]
@@ -302,11 +300,7 @@ def _docker_stats(timeout_sec: float = 2.5) -> List[Dict[str, Any]]:
         item = {
             "name": name,
             "cpu_pct": float(cpu_s) if cpu_s else None,
-
-            # FIX: UI рисует именно raw_mem
-            "raw_mem": mem_usage_s,
-
-            # оставляем полезные поля "на будущее"
+            "raw_mem": mem_usage_s,  # UI рисует именно raw_mem
             "mem_usage_raw": mem_usage_s,
             "mem_used_bytes": mem_used_b,
             "mem_limit_bytes": mem_limit_b,
@@ -319,7 +313,7 @@ def _docker_stats(timeout_sec: float = 2.5) -> List[Dict[str, Any]]:
 
 def build_metrics_payload() -> Dict[str, Any]:
     """
-    FIX: возвращаем СХЕМУ, которую ждёт ui/src/pages/System.jsx
+    Возвращаем схему, которую ждёт ui/src/pages/System.jsx
     """
     mem = _read_meminfo_bytes()
     mem_total_b = mem.get("MemTotal")
@@ -357,13 +351,10 @@ def build_metrics_payload() -> Dict[str, Any]:
         "load1": load1,
         "load5": load5,
         "load15": load15,
-
-        # UI ждёт:
         "cpu_pct": cpu_pct,
         "mem_total_mb": _bytes_to_mb(mem_total_b),
         "mem_used_mb": _bytes_to_mb(mem_used_b),
         "mem_avail_mb": _bytes_to_mb(mem_avail_b),
-
         "disk_root": disk_mb(d_root),
         "disk_project": disk_mb(d_project),
         "disk_config": disk_mb(d_config),
@@ -818,7 +809,6 @@ def _net_heal_helper():
 
     compose_persist = str(EFFECTIVE_COMPOSE_PERSIST)
 
-    # Команда helper'а
     cmd = (
         "set -e; "
         f"NET={net_name}; "
@@ -846,7 +836,6 @@ def _net_heal_helper():
             "bridge",
             "-v",
             "/var/run/docker.sock:/var/run/docker.sock",
-            # Монтируем ХОСТ проект/конфиг, чтобы helper видел compose_persist и config
             "-v",
             f"{_HOST_PROJECT_SOURCE}:/project",
             "-v",
@@ -930,8 +919,21 @@ def do_update():
 
 
 # -------------------------
-# HTTP API
+# Compatibility payloads
 # -------------------------
+
+def build_check_payload() -> Dict[str, Any]:
+    STATE["last_check"] = int(time.time())
+    return {
+        "ok": True,
+        "running": STATE.get("running"),
+        "step": STATE.get("step"),
+        "last_result": STATE.get("last_result"),
+        "last_error": STATE.get("last_error"),
+        "last_check": STATE.get("last_check"),
+        "last_action": STATE.get("last_action"),
+    }
+
 
 # -------------------------
 # HTTP API
@@ -947,77 +949,46 @@ class Handler(BaseHTTPRequestHandler):
         self.wfile.write(body)
 
     def do_POST(self):
-        # UI: "Обновить сейчас" -> POST /start
+        # UI/gatebox: trigger update
         if self.path == "/start":
             if not STATE["running"]:
                 threading.Thread(target=do_update, daemon=True).start()
-            self._json(200, {"ok": True, "started": True})
+            self._json(200, {"ok": True})
             return
 
-        self._json(404, {"ok": False, "error": "not found"})
+        # UI compatibility: some clients send POST /check or POST /status
+        if self.path == "/check":
+            self._json(200, build_check_payload())
+            return
+
+        if self.path == "/status":
+            self._json(200, STATE)
+            return
+
+        self._json(404, {"error": "not found"})
 
     def do_GET(self):
-        # -------------------------------------------------
-        # Compatibility endpoints (gatebox UI expects these)
-        # -------------------------------------------------
-
+        # Root: "жив ли updater"
         if self.path == "/":
             self._json(
                 200,
                 {
                     "ok": True,
                     "service": "updater",
-                    "endpoints": ["/check", "/status", "/log", "/metrics", "/start", "/version", "/health"],
+                    "endpoints": ["/check", "/status", "/log", "/metrics", "/start", "/health"],
                 },
             )
             return
 
+        # /health: совместимость
         if self.path == "/health":
             self._json(200, {"ok": True})
             return
 
-        # ВАЖНО: именно сюда ходит gatebox UI (раньше было 404 -> 502)
+        # /check: ВАЖНО — сюда ходит gatebox UI в некоторых версиях
         if self.path == "/check":
-            STATE["last_check"] = int(time.time())
-            self._json(
-                200,
-                {
-                    "ok": True,
-                    "running": STATE.get("running"),
-                    "step": STATE.get("step"),
-                    "last_result": STATE.get("last_result"),
-                    "last_error": STATE.get("last_error"),
-                    "last_check": STATE.get("last_check"),
-                    "last_action": STATE.get("last_action"),
-                    "rollback_path": STATE.get("rollback_path"),
-                    "rollback_saved_at": STATE.get("rollback_saved_at"),
-                    "compose_effective": STATE.get("compose_effective"),
-                    "compose_effective_persist": STATE.get("compose_effective_persist"),
-                },
-            )
+            self._json(200, build_check_payload())
             return
-
-        if self.path == "/version":
-            self._json(
-                200,
-                {
-                    "ok": True,
-                    "service": "updater",
-                    "project_dir": PROJECT_DIR,
-                    "compose_file": COMPOSE_FILE,
-                    "config_dir": CONFIG_DIR,
-                    "project_name": COMPOSE_PROJECT_NAME,
-                    "services": UPDATE_SERVICES,
-                    "health_url": HEALTH_URL,
-                    "fallback_build": FALLBACK_BUILD,
-                    "self_container": SELF_CONTAINER,
-                },
-            )
-            return
-
-        # -------------------------------------------------
-        # Existing endpoints (KEEP)
-        # -------------------------------------------------
 
         if self.path == "/status":
             self._json(200, STATE)
@@ -1031,7 +1002,8 @@ class Handler(BaseHTTPRequestHandler):
             self._json(200, build_metrics_payload())
             return
 
-        self._json(404, {"ok": False, "error": "not found"})
+        self._json(404, {"error": "not found"})
+
 
 log(
     "updater starting on :%s project=%s compose=%s project_name=%s fallback_build=%s health_url=%s services=%s rollback=%s self=%s"
