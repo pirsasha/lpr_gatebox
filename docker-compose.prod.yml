@@ -19,7 +19,7 @@ services:
       MQTT_PASS: "${MQTT_PASS}"
       MQTT_TOPIC: "${MQTT_TOPIC:-gate/open}"
 
-      # если UI где-то обращается к updater — можно раскомментить и оставить:
+      # Если UI/бек ожидает updater url — можно включить
       # UPDATER_BASE_URL: "http://updater:9010"
 
     volumes:
@@ -80,25 +80,42 @@ services:
     restart: unless-stopped
     ports:
       - "${UPDATER_PORT:-9010}:9010"
-    environment:
-      # --- совместимость со "старыми" именами env (у тебя уже было) ---
-      PROJECT: "/project"
-      COMPOSE: "/project/docker-compose.prod.yml"
-      PROJECT_NAME: "lpr_gatebox"
-      SERVICES: "gatebox,rtsp_worker,updater"
-      HEALTH_URL: "http://gatebox:8080/api/v1/health"
-      UPDATE_FALLBACK_BUILD: "0"
 
-      # --- дополнительные (не мешают, но делают поведение стабильнее) ---
+    # Важно: updater должен быть в той же сети, что и сервисы
+    networks:
+      - default
+      - updater_net
+
+    environment:
+      # --- базовые (те, которые updater реально читает в app.py) ---
+      UPDATER_PORT: "9010"
       PROJECT_DIR: "/project"
       COMPOSE_FILE: "/project/docker-compose.prod.yml"
       CONFIG_DIR: "/config"
       COMPOSE_PROJECT_NAME: "lpr_gatebox"
+      UPDATE_SERVICES: "gatebox,rtsp_worker"
+      UPDATE_FALLBACK_BUILD: "0"
+      HEALTH_URL: "http://gatebox:8080/api/v1/health"
+      HEALTH_TIMEOUT_SEC: "60"
       SELF_CONTAINER: "updater"
+
+      # --- совместимость со "старыми" именами (не мешают) ---
+      PROJECT: "/project"
+      COMPOSE: "/project/docker-compose.prod.yml"
+      PROJECT_NAME: "lpr_gatebox"
+      SERVICES: "gatebox,rtsp_worker,updater"
 
     volumes:
       - ./:/project
       - /var/run/docker.sock:/var/run/docker.sock
       - ./config:/config
-      # HOTFIX: подмена кода updater без пересборки образа
+
+      # HOTFIX: подмена кода updater без пересборки образа (можно убрать, когда образ стабилен)
       - ./updater/app.py:/app/app.py:ro
+
+
+# ✅ КЛЮЧЕВОЙ ФИКС: сеть НЕ external → compose создаст сам
+networks:
+  updater_net:
+    name: lpr_gatebox_updater_net
+    driver: bridge
