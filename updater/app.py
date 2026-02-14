@@ -1,14 +1,12 @@
 # =========================================================
 # Файл: updater/app.py
 # Проект: LPR GateBox
-# Версия: v0.3.15-updater-metrics-ui-schema-ru
-# Изменено: 2026-02-11
+# Версия: v0.3.16-updater-check-compat
+# Изменено: 2026-02-14
 #
 # Что сделано:
-# - NEW: добавлен endpoint GET /metrics для UI "Система → Ресурсы"
-# - FIX: /metrics теперь возвращает СХЕМУ, которую ждёт UI:
-#        host.cpu_pct, host.mem_*_mb, host.disk_*.{used_mb,total_mb}, containers[].raw_mem
-# - NEW: host.cpu_pct вычисляется по /proc/stat (дельта за 150мс)
+# - FIX: добавлен endpoint GET /check (совместимость с gatebox UI /api/v1/update/check -> updater:9010/check)
+# - NEW: добавлены GET / (ping), /health (ping), /version (диагностика)
 # - KEEP: текущая логика обновлений, effective compose persist и helper net-heal без изменений
 # =========================================================
 
@@ -46,6 +44,10 @@ STATE: Dict[str, Any] = {
     "last_action": None,
     "compose_effective": None,
     "compose_effective_persist": None,
+
+    # NEW: полезно для UI/диагностики
+    "version": os.environ.get("APP_VERSION") or os.environ.get("TAG") or "unknown",
+    "self": os.environ.get("HOSTNAME") or "updater",
 }
 LOG: List[str] = []
 
@@ -949,12 +951,11 @@ class Handler(BaseHTTPRequestHandler):
 
         self._json(404, {"error": "not found"})
 
-        def do_GET(self):
+    def do_GET(self):
         # -------------------------------------------------
-        # NEW: compatibility endpoints for gatebox UI
+        # FIX/NEW: compatibility endpoints for gatebox UI
         # -------------------------------------------------
 
-        # root: простая проверка "жив ли updater"
         if self.path == "/":
             self._json(
                 200,
@@ -968,13 +969,11 @@ class Handler(BaseHTTPRequestHandler):
             )
             return
 
-        # /health: совместимость (многие ожидают health)
         if self.path == "/health":
             self._json(200, {"ok": True})
             return
 
-        # /check: ВАЖНО — именно сюда ходит gatebox UI
-        # gatebox ранее дергал http://updater:9010/check и падал на 404 → 502 в UI
+        # FIX: gatebox UI ждёт /check
         if self.path == "/check":
             self._json(
                 200,
@@ -990,7 +989,6 @@ class Handler(BaseHTTPRequestHandler):
             )
             return
 
-        # /version: удобная диагностика на странице "Система"
         if self.path == "/version":
             self._json(
                 200,
@@ -1025,7 +1023,6 @@ class Handler(BaseHTTPRequestHandler):
             self._json(200, {"log": LOG[-500:]})
             return
 
-        # NEW/FIX: метрики хоста и контейнеров для UI
         if self.path == "/metrics":
             self._json(200, build_metrics_payload())
             return
