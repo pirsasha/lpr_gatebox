@@ -272,15 +272,17 @@ def apply_settings(settings: Dict[str, Any]) -> Dict[str, Any]:
                 decider.whitelist_path = new_path
                 decider.reload_whitelist()
 
-        if "region_check" in gate:
+    # --- region_* (опционально, backward-compatible) ---
+        if "region_check" in gate and hasattr(decider, "region_check"):
             decider.region_check = bool(gate.get("region_check"))
-        if "region_stab" in gate:
+
+        if "region_stab" in gate and hasattr(decider, "region_stab"):
             decider.region_stab = bool(gate.get("region_stab"))
-        if "region_stab_window_sec" in gate:
+        if "region_stab_window_sec" in gate and hasattr(decider, "region_stab_window_sec"):
             decider.region_stab_window_sec = float(gate.get("region_stab_window_sec"))
-        if "region_stab_min_hits" in gate:
+        if "region_stab_min_hits" in gate and hasattr(decider, "region_stab_min_hits"):
             decider.region_stab_min_hits = int(gate.get("region_stab_min_hits"))
-        if "region_stab_min_ratio" in gate:
+        if "region_stab_min_ratio" in gate and hasattr(decider, "region_stab_min_ratio"):
             decider.region_stab_min_ratio = float(gate.get("region_stab_min_ratio"))
 
         applied["gate"] = {
@@ -289,11 +291,13 @@ def apply_settings(settings: Dict[str, Any]) -> Dict[str, Any]:
             "confirm_window_sec": decider.window_sec,
             "cooldown_sec": decider.cooldown_sec,
             "whitelist_path": decider.whitelist_path,
-            "region_check": decider.region_check,
-            "region_stab": decider.region_stab,
-            "region_stab_window_sec": decider.region_stab_window_sec,
-            "region_stab_min_hits": decider.region_stab_min_hits,
-            "region_stab_min_ratio": decider.region_stab_min_ratio,
+
+            # безопасно: если атрибута нет — возвращаем дефолт
+            "region_check": getattr(decider, "region_check", False),
+            "region_stab": getattr(decider, "region_stab", False),
+            "region_stab_window_sec": getattr(decider, "region_stab_window_sec", 0.0),
+            "region_stab_min_hits": getattr(decider, "region_stab_min_hits", 0),
+            "region_stab_min_ratio": getattr(decider, "region_stab_min_ratio", 0.0),
         }
 
     # --- MQTT ---
