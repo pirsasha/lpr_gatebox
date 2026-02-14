@@ -933,6 +933,10 @@ def do_update():
 # HTTP API
 # -------------------------
 
+c# -------------------------
+# HTTP API
+# -------------------------
+
 class Handler(BaseHTTPRequestHandler):
     def _json(self, code: int, data):
         body = json.dumps(data, ensure_ascii=False).encode("utf-8")
@@ -943,17 +947,18 @@ class Handler(BaseHTTPRequestHandler):
         self.wfile.write(body)
 
     def do_POST(self):
+        # UI: "Обновить сейчас" -> POST /start
         if self.path == "/start":
             if not STATE["running"]:
                 threading.Thread(target=do_update, daemon=True).start()
-            self._json(200, {"ok": True})
+            self._json(200, {"ok": True, "started": True})
             return
 
-        self._json(404, {"error": "not found"})
+        self._json(404, {"ok": False, "error": "not found"})
 
     def do_GET(self):
         # -------------------------------------------------
-        # FIX/NEW: compatibility endpoints for gatebox UI
+        # Compatibility endpoints (gatebox UI expects these)
         # -------------------------------------------------
 
         if self.path == "/":
@@ -962,9 +967,7 @@ class Handler(BaseHTTPRequestHandler):
                 {
                     "ok": True,
                     "service": "updater",
-                    "version": STATE.get("version"),
-                    "self": STATE.get("self"),
-                    "endpoints": ["/check", "/status", "/log", "/metrics", "/start", "/version"],
+                    "endpoints": ["/check", "/status", "/log", "/metrics", "/start", "/version", "/health"],
                 },
             )
             return
@@ -973,8 +976,9 @@ class Handler(BaseHTTPRequestHandler):
             self._json(200, {"ok": True})
             return
 
-        # FIX: gatebox UI ждёт /check
+        # ВАЖНО: именно сюда ходит gatebox UI (раньше было 404 -> 502)
         if self.path == "/check":
+            STATE["last_check"] = int(time.time())
             self._json(
                 200,
                 {
@@ -985,6 +989,10 @@ class Handler(BaseHTTPRequestHandler):
                     "last_error": STATE.get("last_error"),
                     "last_check": STATE.get("last_check"),
                     "last_action": STATE.get("last_action"),
+                    "rollback_path": STATE.get("rollback_path"),
+                    "rollback_saved_at": STATE.get("rollback_saved_at"),
+                    "compose_effective": STATE.get("compose_effective"),
+                    "compose_effective_persist": STATE.get("compose_effective_persist"),
                 },
             )
             return
@@ -995,8 +1003,6 @@ class Handler(BaseHTTPRequestHandler):
                 {
                     "ok": True,
                     "service": "updater",
-                    "version": STATE.get("version"),
-                    "self": STATE.get("self"),
                     "project_dir": PROJECT_DIR,
                     "compose_file": COMPOSE_FILE,
                     "config_dir": CONFIG_DIR,
@@ -1004,9 +1010,7 @@ class Handler(BaseHTTPRequestHandler):
                     "services": UPDATE_SERVICES,
                     "health_url": HEALTH_URL,
                     "fallback_build": FALLBACK_BUILD,
-                    "compose_effective": STATE.get("compose_effective"),
-                    "compose_effective_persist": STATE.get("compose_effective_persist"),
-                    "rollback_path": str(ROLLBACK_PATH),
+                    "self_container": SELF_CONTAINER,
                 },
             )
             return
@@ -1027,8 +1031,7 @@ class Handler(BaseHTTPRequestHandler):
             self._json(200, build_metrics_payload())
             return
 
-        self._json(404, {"error": "not found"})
-
+        self._json(404, {"ok": False, "error": "not found"})
 
 log(
     "updater starting on :%s project=%s compose=%s project_name=%s fallback_build=%s health_url=%s services=%s rollback=%s self=%s"
