@@ -90,3 +90,4 @@ services:
       - ./:/project
       - /var/run/docker.sock:/var/run/docker.sock
       - ./config:/config
+      - ./updater/app.py:/app/app.py:ro
