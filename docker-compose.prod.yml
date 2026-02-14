@@ -232,7 +232,7 @@ services:
     environment:
       PROJECT_DIR: "/project"
       COMPOSE_FILE: "/project/docker-compose.prod.yml"
-      COMPOSE: "/project/docker-compose.prod.yml"
+      COMPOSE_FILE: "/project/docker-compose.prod.yml"
       COMPOSE_PROJECT_NAME: "lpr_gatebox"
       UPDATE_SERVICES: "gatebox,rtsp_worker"
       HEALTH_URL: "http://gatebox:8080/api/v1/health"
