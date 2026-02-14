@@ -1,26 +1,59 @@
-name: lpr_gatebox
-
 services:
   gatebox:
     image: ghcr.io/pirsasha/lpr_gatebox-gatebox:${TAG:-stable}
     restart: unless-stopped
     ports:
-      - "${GATEBOX_PORT:-8080}:8080"
+      - ${GATEBOX_PORT:-8080}:8080
     environment:
-      APP_VERSION: "${TAG:-stable}"
+      APP_VERSION: ${TAG:-stable}
 
-      MODEL_PATH: "/models/plate_ocr.onnx"
-      SETTINGS_PATH: "/config/settings.json"
+      # paths
+      MODEL_PATH: ${MODEL_PATH:-/models/plate_ocr.onnx}
+      SETTINGS_PATH: /config/settings.json
+      WHITELIST_PATH: ${WHITELIST_PATH:-/config/whitelist.json}
 
-      MQTT_ENABLED: "${MQTT_ENABLED:-1}"
-      MQTT_HOST: "${MQTT_HOST}"
-      MQTT_PORT: "${MQTT_PORT}"
-      MQTT_USER: "${MQTT_USER}"
-      MQTT_PASS: "${MQTT_PASS}"
-      MQTT_TOPIC: "${MQTT_TOPIC:-gate/open}"
+      # core gatebox tuning
+      MIN_CONF: ${MIN_CONF:-0.85}
+      CONFIRM_N: ${CONFIRM_N:-2}
+      CONFIRM_WINDOW_SEC: ${CONFIRM_WINDOW_SEC:-2.0}
+      COOLDOWN_SEC: ${COOLDOWN_SEC:-15.0}
 
-      # Если UI/бек ожидает updater url — можно включить
-      # UPDATER_BASE_URL: "http://updater:9010"
+      OCR_ORIENT_TRY: ${OCR_ORIENT_TRY:-1}
+      OCR_WARP_TRY: ${OCR_WARP_TRY:-1}
+      OCR_WARP_W: ${OCR_WARP_W:-320}
+      OCR_WARP_H: ${OCR_WARP_H:-96}
+
+      POSTCROP: ${POSTCROP:-1}
+      POSTCROP_LRBT: ${POSTCROP_LRBT:-0.02,0.02,0.05,0.05}
+
+      REGION_CHECK: ${REGION_CHECK:-1}
+      REGION_STAB: ${REGION_STAB:-1}
+      REGION_STAB_WINDOW_SEC: ${REGION_STAB_WINDOW_SEC:-2.5}
+      REGION_STAB_MIN_HITS: ${REGION_STAB_MIN_HITS:-3}
+      REGION_STAB_MIN_RATIO: ${REGION_STAB_MIN_RATIO:-0.60}
+
+      DEBUG_LOG: ${DEBUG_LOG:-0}
+      PRINT_EVERY_RESPONSE: ${PRINT_EVERY_RESPONSE:-0}
+
+      # UI flags
+      UI_EVENTS_ONLY_RU: ${UI_EVENTS_ONLY_RU:-1}
+      UI_EVENTS_RU_STRICT: ${UI_EVENTS_RU_STRICT:-0}
+      UI_EVENTS_INCLUDE_DENIED: ${UI_EVENTS_INCLUDE_DENIED:-1}
+      UI_EVENTS_INCLUDE_INVALID: ${UI_EVENTS_INCLUDE_INVALID:-0}
+      UI_I18N_RU: ${UI_I18N_RU:-1}
+
+      # Updater endpoint for UI button
+      UPDATER_URL: ${UPDATER_URL:-http://updater:9010}
+
+      # MQTT — ОСТАВЛЕНО, НО БЕЗ СЕКРЕТОВ/ДЕФОЛТОВ
+      MQTT_ENABLED: ${MQTT_ENABLED:-0}
+      MQTT_HOST: ${MQTT_HOST}
+      MQTT_PORT: ${MQTT_PORT:-1883}
+      MQTT_USER: ${MQTT_USER}
+      MQTT_PASS: ${MQTT_PASS}
+      MQTT_TOPIC: ${MQTT_TOPIC:-gate/open}
+
+      PYTHONUNBUFFERED: ${PYTHONUNBUFFERED:-1}
 
     volumes:
       - ./models:/models:ro
@@ -37,33 +70,134 @@ services:
     image: ghcr.io/pirsasha/lpr_gatebox-rtsp-worker:${TAG:-stable}
     restart: unless-stopped
     environment:
-      APP_VERSION: "${TAG:-stable}"
-      INFER_URL: "http://gatebox:8080/infer"
-      SETTINGS_BASE_URL: "http://gatebox:8080"
-      SETTINGS_POLL_SEC: "${SETTINGS_POLL_SEC:-1.5}"
+      APP_VERSION: ${TAG:-stable}
 
-      RTSP_URL: "${RTSP_URL}"
+      INFER_URL: http://gatebox:8080/infer
+      SETTINGS_BASE_URL: http://gatebox:8080
+      SETTINGS_POLL_SEC: ${SETTINGS_POLL_SEC:-1.5}
 
-      READ_FPS: "${READ_FPS:-10}"
-      DET_FPS: "${DET_FPS:-8}"
-      SEND_FPS: "${SEND_FPS:-6}"
+      # --- AUTO day/night ---
+      AUTO_MODE: ${AUTO_MODE:-0}
+      AUTO_EVERY_N: ${AUTO_EVERY_N:-3}
+      AUTO_LUMA_DAY: ${AUTO_LUMA_DAY:-95}
+      AUTO_LUMA_NIGHT: ${AUTO_LUMA_NIGHT:-65}
+      AUTO_HYST_SEC: ${AUTO_HYST_SEC:-2.0}
+      AUTO_SWITCH_CHECK_SEC: ${AUTO_SWITCH_CHECK_SEC:-1.0}
+      AUTO_SWITCH_AGE_MS: ${AUTO_SWITCH_AGE_MS:-300}
+      AUTO_SWITCH_STREAK: ${AUTO_SWITCH_STREAK:-5}
+      AUTO_SWITCH_COOLDOWN_SEC: ${AUTO_SWITCH_COOLDOWN_SEC:-15.0}
 
-      DET_MODEL_PATH: "/models/license-plate-finetune-v1s.pt"
-      DET_CONF: "${DET_CONF:-0.40}"
-      DET_IOU: "${DET_IOU:-0.45}"
-      DET_IMG_SIZE: "${DET_IMG_SIZE:-416}"
+      AUTO_METRICS_SOURCE: ${AUTO_METRICS_SOURCE:-roi}
+      AUTO_METRICS_DOWNSCALE_W: ${AUTO_METRICS_DOWNSCALE_W:-320}
 
-      ROI: "${ROI:-}"
-      PLATE_PAD: "${PLATE_PAD:-0.14}"
+      AUTO_PAD_ENABLE: ${AUTO_PAD_ENABLE:-1}
+      AUTO_RECTIFY: ${AUTO_RECTIFY:-1}
+      AUTO_UPSCALE_ENABLE: ${AUTO_UPSCALE_ENABLE:-1}
+      AUTO_UPSCALE_DAY_W: ${AUTO_UPSCALE_DAY_W:-480}
+      AUTO_UPSCALE_DAY_H: ${AUTO_UPSCALE_DAY_H:-144}
+      AUTO_UPSCALE_NIGHT_W: ${AUTO_UPSCALE_NIGHT_W:-720}
+      AUTO_UPSCALE_NIGHT_H: ${AUTO_UPSCALE_NIGHT_H:-224}
 
-      RECTIFY: "${RECTIFY:-1}"
-      RECTIFY_W: "${RECTIFY_W:-320}"
-      RECTIFY_H: "${RECTIFY_H:-96}"
+      AUTO_PREPROC_ENABLE: ${AUTO_PREPROC_ENABLE:-0}
 
-      REFINE_INNER_PAD: "${REFINE_INNER_PAD:-0.03}"
-      REFINE_MIN_AREA_RATIO: "${REFINE_MIN_AREA_RATIO:-0.03}"
+      AUTO_DROP_ON_BLUR: ${AUTO_DROP_ON_BLUR:-1}
+      AUTO_BLUR_MIN: ${AUTO_BLUR_MIN:-35.0}
+      AUTO_DROP_ON_GLARE: ${AUTO_DROP_ON_GLARE:-1}
+      AUTO_SAT_GLARE: ${AUTO_SAT_GLARE:-0.10}
 
-      DEBUG_SAVE: "${DEBUG_SAVE:-0}"
+      # --- camera / capture ---
+      CAMERA_ID: ${CAMERA_ID:-cam1}
+      CAPTURE_BACKEND: ${CAPTURE_BACKEND:-auto}
+      RTSP_URL: ${RTSP_URL}
+
+      OPENCV_FFMPEG_CAPTURE_OPTIONS: ${OPENCV_FFMPEG_CAPTURE_OPTIONS:-rtsp_transport;tcp|stimeout;8000000|rw_timeout;30000000|fflags;nobuffer|flags;low_delay|max_delay;0|probesize;32000|analyzeduration;0}
+      RTSP_TRANSPORT: ${RTSP_TRANSPORT:-tcp}
+      RTSP_OPEN_TIMEOUT_MS: ${RTSP_OPEN_TIMEOUT_MS:-8000}
+      RTSP_READ_TIMEOUT_MS: ${RTSP_READ_TIMEOUT_MS:-30000}
+      RTSP_DRAIN_GRABS: ${RTSP_DRAIN_GRABS:-2}
+
+      READ_FPS: ${READ_FPS:-15}
+      DET_FPS: ${DET_FPS:-2}
+      SEND_FPS: ${SEND_FPS:-2.5}
+
+      # --- detector ---
+      DET_MODEL_PATH: ${DET_MODEL_PATH:-/models/license-plate-finetune-v1s.pt}
+      DET_CONF: ${DET_CONF:-0.35}
+      DET_IOU: ${DET_IOU:-0.45}
+      DET_IMG_SIZE: ${DET_IMG_SIZE:-416}
+
+      # --- ROI / crop ---
+      ROI: ${ROI:-}
+      OCR_CROP_MODE: ${OCR_CROP_MODE:-yolo}
+
+      MIN_PLATE_W: ${MIN_PLATE_W:-80}
+      MIN_PLATE_H: ${MIN_PLATE_H:-20}
+
+      PLATE_PAD: ${PLATE_PAD:-0.14}
+      PLATE_PAD_BASE: ${PLATE_PAD_BASE:-0.07}
+      PLATE_PAD_SMALL: ${PLATE_PAD_SMALL:-0.12}
+      PLATE_PAD_MAX: ${PLATE_PAD_MAX:-0.16}
+      PLATE_PAD_SMALL_W: ${PLATE_PAD_SMALL_W:-260}
+      PLATE_PAD_SMALL_H: ${PLATE_PAD_SMALL_H:-85}
+
+      # --- refine/rectify ---
+      RECTIFY: ${RECTIFY:-1}
+      RECTIFY_W: ${RECTIFY_W:-320}
+      RECTIFY_H: ${RECTIFY_H:-96}
+      REFINE_INNER_PAD: ${REFINE_INNER_PAD:-0.06}
+      REFINE_MIN_AREA_RATIO: ${REFINE_MIN_AREA_RATIO:-0.03}
+
+      # --- tracking ---
+      TRACK_ENABLE: ${TRACK_ENABLE:-1}
+      TRACK_ALPHA: ${TRACK_ALPHA:-0.65}
+      TRACK_IOU_MIN: ${TRACK_IOU_MIN:-0.12}
+      TRACK_HOLD_SEC: ${TRACK_HOLD_SEC:-1.0}
+
+      # --- confirm/resend ---
+      PLATE_CONFIRM_K: ${PLATE_CONFIRM_K:-2}
+      PLATE_CONFIRM_WINDOW_SEC: ${PLATE_CONFIRM_WINDOW_SEC:-1.8}
+      PLATE_RESEND_SEC: ${PLATE_RESEND_SEC:-0.4}
+      GLOBAL_SEND_MIN_INTERVAL_SEC: ${GLOBAL_SEND_MIN_INTERVAL_SEC:-0.5}
+      SEND_ON_NO_DET: ${SEND_ON_NO_DET:-0}
+
+      # --- freeze detection ---
+      FREEZE_ENABLE: ${FREEZE_ENABLE:-0}
+      FREEZE_EVERY_N: ${FREEZE_EVERY_N:-3}
+      FREEZE_MAX_SEC: ${FREEZE_MAX_SEC:-3.0}
+      FREEZE_DIFF_MEAN_THR: ${FREEZE_DIFF_MEAN_THR:-0.35}
+
+      # --- live/debug saving ---
+      LIVE_DIR: ${LIVE_DIR:-/config/live}
+      LIVE_EVERY_SEC: ${LIVE_EVERY_SEC:-2.0}
+      LIVE_DRAW_YOLO: ${LIVE_DRAW_YOLO:-1}
+      LIVE_SAVE_QUAD: ${LIVE_SAVE_QUAD:-1}
+      LIVE_JPEG_QUALITY: ${LIVE_JPEG_QUALITY:-85}
+
+      SAVE_DIR: ${SAVE_DIR:-/debug}
+      SAVE_EVERY: ${SAVE_EVERY:-0}
+      SAVE_FULL_FRAME: ${SAVE_FULL_FRAME:-0}
+      SAVE_SEND_BYTES: ${SAVE_SEND_BYTES:-0}
+      SAVE_WITH_ROI: ${SAVE_WITH_ROI:-0}
+
+      # --- perf / io ---
+      JPEG_QUALITY: ${JPEG_QUALITY:-94}
+      HB_EVERY_SEC: ${HB_EVERY_SEC:-1.0}
+      LOG_EVERY_SEC: ${LOG_EVERY_SEC:-5}
+      HTTP_TIMEOUT_SEC: ${HTTP_TIMEOUT_SEC:-2.0}
+      FFMPEG_READ_TIMEOUT_SEC: ${FFMPEG_READ_TIMEOUT_SEC:-2.0}
+      FFMPEG_THREADS: ${FFMPEG_THREADS:-1}
+      FFMPEG_PROBE: ${FFMPEG_PROBE:-0}
+
+      # --- optional geometry ---
+      DESKEW_ENABLE: ${DESKEW_ENABLE:-0}
+      DESKEW_MIN_ANGLE_DEG: ${DESKEW_MIN_ANGLE_DEG:-1}
+      DESKEW_MAX_ANGLE_DEG: ${DESKEW_MAX_ANGLE_DEG:-12}
+
+      # misc
+      EVENT_MODE: ${EVENT_MODE:-on_plate_change}
+      PYTHONPATH: ${PYTHONPATH:-/work}
+      PYTHONUNBUFFERED: ${PYTHONUNBUFFERED:-1}
+      WORKER_DEBUG: ${WORKER_DEBUG:-0}
 
     volumes:
       - ./models:/models:ro
@@ -79,43 +213,47 @@ services:
     image: ghcr.io/pirsasha/lpr_gatebox-updater:${TAG:-stable}
     restart: unless-stopped
     ports:
-      - "${UPDATER_PORT:-9010}:9010"
+      - ${UPDATER_PORT:-9010}:9010
 
-    # Важно: updater должен быть в той же сети, что и сервисы
     networks:
       - default
       - updater_net
 
     environment:
-      # --- базовые (те, которые updater реально читает в app.py) ---
       UPDATER_PORT: "9010"
-      PROJECT_DIR: "/project"
-      COMPOSE_FILE: "/project/docker-compose.prod.yml"
-      CONFIG_DIR: "/config"
-      COMPOSE_PROJECT_NAME: "lpr_gatebox"
-      UPDATE_SERVICES: "gatebox,rtsp_worker"
-      UPDATE_FALLBACK_BUILD: "0"
-      HEALTH_URL: "http://gatebox:8080/api/v1/health"
-      HEALTH_TIMEOUT_SEC: "60"
-      SELF_CONTAINER: "updater"
+      PROJECT_DIR: /project
+      CONFIG_DIR: /config
 
-      # --- совместимость со "старыми" именами (не мешают) ---
-      PROJECT: "/project"
-      COMPOSE: "/project/docker-compose.prod.yml"
-      PROJECT_NAME: "lpr_gatebox"
-      SERVICES: "gatebox,rtsp_worker,updater"
+      # ВАЖНО: updater должен ссылаться именно на prod compose
+      COMPOSE_FILE: /project/docker-compose.prod.yml
+      COMPOSE: /project/docker-compose.prod.yml
+      COMPOSE_PROJECT_NAME: lpr_gatebox
+
+      UPDATE_SERVICES: gatebox,rtsp_worker
+      UPDATE_FALLBACK_BUILD: "0"
+      HEALTH_URL: http://gatebox:8080/api/v1/health
+      HEALTH_TIMEOUT_SEC: "60"
+      SELF_CONTAINER: updater
+
+      # для обратной совместимости
+      PROJECT: /project
+      PROJECT_NAME: lpr_gatebox
+      SERVICES: gatebox,rtsp_worker,updater
 
     volumes:
       - ./:/project
       - /var/run/docker.sock:/var/run/docker.sock
       - ./config:/config
-
-      # HOTFIX: подмена кода updater без пересборки образа (можно убрать, когда образ стабилен)
+      # если хочешь hotfix кода updater — оставь, иначе можно убрать
       - ./updater/app.py:/app/app.py:ro
 
 
-# ✅ КЛЮЧЕВОЙ ФИКС: сеть НЕ external → compose создаст сам
 networks:
+  default:
+    name: lpr_gatebox_default
+    driver: bridge
+
+  # НЕ external -> compose создаст сам (и updater не упадёт)
   updater_net:
     name: lpr_gatebox_updater_net
     driver: bridge
