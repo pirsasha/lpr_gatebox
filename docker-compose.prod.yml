@@ -65,7 +65,7 @@ services:
     volumes:
       - ./models:/models:ro
       - ./debug:/work/debug
-
+      - ./config:/config
     depends_on:
       gatebox:
         condition: service_healthy

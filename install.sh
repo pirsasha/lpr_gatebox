@@ -4,25 +4,28 @@ set -euo pipefail
 # =========================================================
 # Файл: install.sh
 # Проект: LPR GateBox
-# Версия: v0.3.9-installer
+# Версия: v0.3.11-installer
 # Автор: Александр
 # Что сделано:
 # - Кросс-платформенный установщик (Linux/macOS)
 # - Цветной UI, логотип, шаги, проверки
 # - Команды: install/update/uninstall/status/logs
+# - NEW: создаёт config/live + debug
+# - NEW: проверка volume ./config:/config у rtsp_worker (snapshot contract)
+# - NEW: soft-check snapshot endpoint /api/rtsp/frame.jpg
 # =========================================================
 
 # ---------- UI (colors) ----------
-RED="\033[31m"; GREEN="\033[32m"; YELLOW="\033[33m"; BLUE="\033[34m"; MAG="\033[35m"; CYAN="\033[36m"; DIM="\033[2m"; RESET="\033[0m"
+RED="\033[31m"; GREEN="\033[32m"; YELLOW="\033[33m"; BLUE="\033[34m"; CYAN="\033[36m"; DIM="\033[2m"; RESET="\033[0m"
 BOLD="\033[1m"
 
 logo() {
   echo -e "${CYAN}${BOLD}"
   cat <<'EOF'
-   _     ____  ____     ____       _       ____            
+   _     ____  ____     ____       _       ____
   | |   |  _ \|  _ \   / ___| __ _ | |_ ___| __ )  _____  __
   | |   | |_) | |_) | | |  _ / _` || __/ _ \  _ \ / _ \ \/ /
-  | |___|  __/|  _ <  | |_| | (_| || ||  __/ |_) | (_) >  < 
+  | |___|  __/|  _ <  | |_| | (_| || ||  __/ |_) | (_) >  <
   |_____|_|   |_| \_\  \____|\__,_| \__\___|____/ \___/_/\_\
 EOF
   echo -e "${RESET}${DIM}Установщик LPR GateBox (Linux/macOS). Русский интерфейс + цвета.${RESET}"
@@ -33,12 +36,9 @@ ok()   { echo -e "${GREEN}✓${RESET} $*"; }
 warn() { echo -e "${YELLOW}!${RESET} $*"; }
 err()  { echo -e "${RED}✗${RESET} $*"; }
 info() { echo -e "${BLUE}→${RESET} $*"; }
+die()  { err "$*"; exit 1; }
 
-die() { err "$*"; exit 1; }
-
-need_cmd() {
-  command -v "$1" >/dev/null 2>&1 || die "Не найдено: $1. Установи и повтори."
-}
+need_cmd() { command -v "$1" >/dev/null 2>&1 || die "Не найдено: $1. Установи и повтори."; }
 
 # ---------- Defaults ----------
 ACTION="${1:-install}"
@@ -49,11 +49,7 @@ ENV_FILE=".env"
 CFG_DIR="config"
 MODELS_DIR="models"
 
-# ---------- Helpers ----------
-is_root() { [[ "${EUID:-$(id -u)}" -eq 0 ]]; }
-
 detect_ip() {
-  # best-effort LAN ip
   local ip=""
   ip="$(ip route get 1.1.1.1 2>/dev/null | awk '/src/ {for(i=1;i<=NF;i++) if($i=="src"){print $(i+1); exit}}' || true)"
   if [[ -z "$ip" ]]; then
@@ -63,7 +59,6 @@ detect_ip() {
 }
 
 compose_cmd() {
-  # Use docker compose plugin if available
   if docker compose version >/dev/null 2>&1; then
     echo "docker compose"
   elif command -v docker-compose >/dev/null 2>&1; then
@@ -74,27 +69,42 @@ compose_cmd() {
 }
 
 ensure_repo() {
-  local dir="$1"
-  local url="$2"
-
+  local dir="$1" url="$2"
   if [[ -d "$dir/.git" ]]; then
     ok "Репозиторий уже есть: $dir"
     return 0
   fi
-
   info "Клонирую репозиторий: $url"
   need_cmd git
   git clone "$url" "$dir"
   ok "Клонирование завершено"
 }
 
+check_snapshot_contract() {
+  # Проверка: в rtsp_worker.volumes должен быть - ./config:/config
+  # (иначе gatebox не увидит /config/live/frame.jpg)
+  local f="$1"
+  if ! awk '
+    $1=="rtsp_worker:" {in=1; vol=0; found=0; next}
+    in && $1=="volumes:" {vol=1; next}
+    in && vol && $0 ~ /- \.\/config:\/config/ {found=1}
+    in && $1 ~ /^[A-Za-z0-9_]+:$/ && $1!="rtsp_worker:" {exit}
+    END {exit(found?0:1)}
+  ' "$f"; then
+    warn "ВАЖНО: в $f у rtsp_worker нет volume ./config:/config."
+    warn "Иначе snapshot в UI будет 404 (gatebox не видит /config/live/frame.jpg)."
+    warn "Исправление: добавь в rtsp_worker -> volumes: - ./config:/config"
+  else
+    ok "Проверка snapshot: rtsp_worker видит ./config (OK)"
+  fi
+}
+
 ensure_examples() {
   local dir="$1"
   cd "$dir"
-
   [[ -f "$COMPOSE_FILE" ]] || die "Не найден $COMPOSE_FILE в $dir"
 
-  # create .env from .env.example
+  # .env
   if [[ ! -f "$ENV_FILE" ]]; then
     if [[ -f ".env.example" ]]; then
       cp ".env.example" "$ENV_FILE"
@@ -119,9 +129,11 @@ EOF
     ok "$ENV_FILE уже существует — не трогаю"
   fi
 
-  # config examples
-  mkdir -p "$CFG_DIR"
+  # config + обязательные папки live/debug
+  mkdir -p "$CFG_DIR" "$CFG_DIR/live" "debug"
+  ok "Созданы папки: config, config/live, debug"
 
+  # settings.json
   if [[ ! -f "$CFG_DIR/settings.json" ]]; then
     if [[ -f "$CFG_DIR/settings.example.json" ]]; then
       cp "$CFG_DIR/settings.example.json" "$CFG_DIR/settings.json"
@@ -150,6 +162,7 @@ EOF
     ok "config/settings.json уже существует — не трогаю"
   fi
 
+  # whitelist.json
   if [[ ! -f "$CFG_DIR/whitelist.json" ]]; then
     if [[ -f "$CFG_DIR/whitelist.example.json" ]]; then
       cp "$CFG_DIR/whitelist.example.json" "$CFG_DIR/whitelist.json"
@@ -171,58 +184,55 @@ EOF
   else
     ok "models/ найден"
   fi
+
+  check_snapshot_contract "$COMPOSE_FILE"
 }
 
 edit_env_interactive() {
   local dir="$1"
   cd "$dir"
 
-  local tag rtsp mqtt_enabled mqtt_host mqtt_port mqtt_user mqtt_pass mqtt_topic
+  local tag rtsp mqtt_enabled mqtt_host mqtt_port mqtt_user mqtt_pass mqtt_topic input
   echo -e "${BOLD}Настройка .env (можно просто нажимать Enter)${RESET}"
   echo
 
   tag="$(grep -E '^TAG=' "$ENV_FILE" | head -n1 | cut -d= -f2- || true)"
   read -rp "Версия (TAG) [${tag:-stable}] : " input || true
-  if [[ -n "${input:-}" ]]; then
-    tag="$input"
-  else
-    tag="${tag:-stable}"
-  fi
+  [[ -n "${input:-}" ]] && tag="$input" || tag="${tag:-stable}"
 
   rtsp="$(grep -E '^RTSP_URL=' "$ENV_FILE" | head -n1 | cut -d= -f2- || true)"
   read -rp "RTSP_URL [${rtsp:-}] : " input || true
-  if [[ -n "${input:-}" ]]; then rtsp="$input"; fi
+  [[ -n "${input:-}" ]] && rtsp="$input"
 
   mqtt_enabled="$(grep -E '^MQTT_ENABLED=' "$ENV_FILE" | head -n1 | cut -d= -f2- || true)"
   read -rp "Включить MQTT? (0/1) [${mqtt_enabled:-0}] : " input || true
-  if [[ -n "${input:-}" ]]; then mqtt_enabled="$input"; else mqtt_enabled="${mqtt_enabled:-0}"; fi
+  [[ -n "${input:-}" ]] && mqtt_enabled="$input" || mqtt_enabled="${mqtt_enabled:-0}"
 
   if [[ "$mqtt_enabled" == "1" ]]; then
     mqtt_host="$(grep -E '^MQTT_HOST=' "$ENV_FILE" | head -n1 | cut -d= -f2- || true)"
     read -rp "MQTT_HOST [${mqtt_host:-}] : " input || true
-    if [[ -n "${input:-}" ]]; then mqtt_host="$input"; fi
+    [[ -n "${input:-}" ]] && mqtt_host="$input"
 
     mqtt_port="$(grep -E '^MQTT_PORT=' "$ENV_FILE" | head -n1 | cut -d= -f2- || true)"
     read -rp "MQTT_PORT [${mqtt_port:-1883}] : " input || true
-    if [[ -n "${input:-}" ]]; then mqtt_port="$input"; else mqtt_port="${mqtt_port:-1883}"; fi
+    [[ -n "${input:-}" ]] && mqtt_port="$input" || mqtt_port="${mqtt_port:-1883}"
 
     mqtt_user="$(grep -E '^MQTT_USER=' "$ENV_FILE" | head -n1 | cut -d= -f2- || true)"
     read -rp "MQTT_USER [${mqtt_user:-}] : " input || true
-    if [[ -n "${input:-}" ]]; then mqtt_user="$input"; fi
+    [[ -n "${input:-}" ]] && mqtt_user="$input"
 
     mqtt_pass="$(grep -E '^MQTT_PASS=' "$ENV_FILE" | head -n1 | cut -d= -f2- || true)"
     read -rsp "MQTT_PASS [скрыто] (Enter оставить как есть): " input || true
     echo
-    if [[ -n "${input:-}" ]]; then mqtt_pass="$input"; fi
+    [[ -n "${input:-}" ]] && mqtt_pass="$input"
 
     mqtt_topic="$(grep -E '^MQTT_TOPIC=' "$ENV_FILE" | head -n1 | cut -d= -f2- || true)"
     read -rp "MQTT_TOPIC [${mqtt_topic:-gate/open}] : " input || true
-    if [[ -n "${input:-}" ]]; then mqtt_topic="$input"; else mqtt_topic="${mqtt_topic:-gate/open}"; fi
+    [[ -n "${input:-}" ]] && mqtt_topic="$input" || mqtt_topic="${mqtt_topic:-gate/open}"
   fi
 
-  # apply edits safely
   set_kv() {
-    local key="$1"; local value="$2"
+    local key="$1" value="$2"
     if grep -qE "^${key}=" "$ENV_FILE"; then
       sed -i.bak "s|^${key}=.*|${key}=${value}|" "$ENV_FILE"
     else
@@ -249,8 +259,8 @@ edit_env_interactive() {
 pull_and_up() {
   local dir="$1"
   cd "$dir"
-
   local dc; dc="$(compose_cmd)"
+
   info "Pull образов (это может занять время)..."
   $dc -f "$COMPOSE_FILE" pull
   ok "Образы загружены"
@@ -266,13 +276,21 @@ health_check() {
   port="$(grep -E '^GATEBOX_PORT=' "$ENV_FILE" | head -n1 | cut -d= -f2- || echo "8080")"
 
   info "Проверка health: http://${ip}:${port}/api/v1/health"
-  # best-effort curl/wget
   if command -v curl >/dev/null 2>&1; then
     curl -fsS "http://${ip}:${port}/api/v1/health" >/dev/null && ok "health OK" || warn "health пока не ответил (проверь логи)"
   elif command -v wget >/dev/null 2>&1; then
     wget -qO- "http://${ip}:${port}/api/v1/health" >/dev/null && ok "health OK" || warn "health пока не ответил (проверь логи)"
   else
     warn "Нет curl/wget — пропускаю health-check"
+  fi
+
+  # soft-check snapshot
+  if command -v curl >/dev/null 2>&1; then
+    if curl -fsS "http://${ip}:${port}/api/rtsp/frame.jpg" >/dev/null 2>&1; then
+      ok "Snapshot доступен: /api/rtsp/frame.jpg"
+    else
+      warn "Snapshot пока недоступен (/api/rtsp/frame.jpg). Если в UI 404 — проверь volume ./config:/config у rtsp_worker и gatebox."
+    fi
   fi
 
   echo
@@ -283,13 +301,12 @@ health_check() {
 
 do_install() {
   logo
-
   need_cmd docker
-  # compose plugin check inside compose_cmd
   compose_cmd >/dev/null
 
   local repo_url="$REPO_URL_DEFAULT"
   local dir="$DIR_DEFAULT"
+  local input
 
   echo -e "${BOLD}Параметры установки${RESET}"
   read -rp "Папка установки [$dir] : " input || true
@@ -320,12 +337,15 @@ do_update() {
   compose_cmd >/dev/null
 
   local dir="$DIR_DEFAULT"
+  local input
   read -rp "Папка установки [$dir] : " input || true
   [[ -n "${input:-}" ]] && dir="$input"
   [[ -f "$dir/$COMPOSE_FILE" ]] || die "Не найден $COMPOSE_FILE в $dir"
 
   cd "$dir"
   local dc; dc="$(compose_cmd)"
+
+  check_snapshot_contract "$COMPOSE_FILE"
 
   info "Pull новых образов..."
   $dc -f "$COMPOSE_FILE" pull
@@ -341,11 +361,12 @@ do_uninstall() {
   compose_cmd >/dev/null
 
   local dir="$DIR_DEFAULT"
+  local input
   read -rp "Папка установки [$dir] : " input || true
   [[ -n "${input:-}" ]] && dir="$input"
 
   if [[ ! -f "$dir/$COMPOSE_FILE" ]]; then
-    warn "Не найден $COMPOSE_FILE в $dir — попробую удалить контейнеры по имени проекта"
+    warn "Не найден $COMPOSE_FILE в $dir — пропускаю down"
   else
     cd "$dir"
     local dc; dc="$(compose_cmd)"
@@ -365,7 +386,7 @@ do_uninstall() {
 
 do_status() {
   logo
-  local dir="$DIR_DEFAULT"
+  local dir="$DIR_DEFAULT" input
   read -rp "Папка установки [$dir] : " input || true
   [[ -n "${input:-}" ]] && dir="$input"
   [[ -f "$dir/$COMPOSE_FILE" ]] || die "Не найден $COMPOSE_FILE в $dir"
@@ -376,7 +397,7 @@ do_status() {
 
 do_logs() {
   logo
-  local dir="$DIR_DEFAULT"
+  local dir="$DIR_DEFAULT" input
   read -rp "Папка установки [$dir] : " input || true
   [[ -n "${input:-}" ]] && dir="$input"
   [[ -f "$dir/$COMPOSE_FILE" ]] || die "Не найден $COMPOSE_FILE в $dir"
