@@ -350,7 +350,6 @@ except Exception:
 # =========================
 # TELEGRAM (optional)
 # =========================
-TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN", "").strip()
 
 _tg_notifier: TelegramNotifier | None = None
 _tg_poller: TelegramPoller | None = None
@@ -372,6 +371,22 @@ def _tg_get_cfg() -> Dict[str, Any]:
 
 def _tg_save_patch(patch: Dict[str, Any]) -> Dict[str, Any]:
     return get_settings_store().update(patch)
+
+
+def _tg_pick_token_from_cfg(cfg: Dict[str, Any]) -> str:
+    """
+    Берём токен из settings.json:
+      settings.telegram.enabled == True
+      settings.telegram.bot_token не пустой
+    """
+    try:
+        tg = cfg.get("telegram") if isinstance(cfg.get("telegram"), dict) else {}
+        tg = tg if isinstance(tg, dict) else {}
+        if not bool(tg.get("enabled")):
+            return ""
+        return str(tg.get("bot_token") or "").strip()
+    except Exception:
+        return ""
 
 
 def _tg_pick_photo_path(cfg: Dict[str, Any]) -> str | None:
@@ -403,7 +418,6 @@ def _tg_enqueue_text(text: str, photo_path: str | None):
     # используем тот же notifier, что и для ok=True
     if _tg_notifier is None:
         return
-    # очередь использует TgTask(text, photo_path)
     try:
         from app.integrations.telegram.notifier import TgTask
         _tg_notifier.q.put_nowait(TgTask(text=text, photo_path=photo_path))
@@ -411,12 +425,30 @@ def _tg_enqueue_text(text: str, photo_path: str | None):
         pass
 
 
+# hooks для интеграции (events -> tg)
 set_telegram_hooks(_tg_get_cfg, _tg_enqueue_text, _tg_pick_photo_path)
 
+# --- token source: ENV > settings.json ---
+TELEGRAM_BOT_TOKEN_ENV = os.environ.get("TELEGRAM_BOT_TOKEN", "").strip()
+_cfg0 = _tg_get_cfg()
+TELEGRAM_BOT_TOKEN_CFG = _tg_pick_token_from_cfg(_cfg0)
+
+TELEGRAM_BOT_TOKEN = TELEGRAM_BOT_TOKEN_ENV or TELEGRAM_BOT_TOKEN_CFG
+
 if TELEGRAM_BOT_TOKEN:
+    if TELEGRAM_BOT_TOKEN_ENV:
+        _tg_log("[tg] token source: ENV (TELEGRAM_BOT_TOKEN)")
+    else:
+        _tg_log("[tg] token source: settings.json (telegram.bot_token)")
+
     try:
         tg_client = TelegramClient(TELEGRAM_BOT_TOKEN)
-        _tg_notifier = TelegramNotifier(tg_client, get_cfg=_tg_get_cfg, log=_tg_log)
+
+        _tg_notifier = TelegramNotifier(
+            tg_client,
+            get_cfg=_tg_get_cfg,
+            log=_tg_log,
+        )
         _tg_notifier.start()
 
         _tg_poller = TelegramPoller(
@@ -427,10 +459,23 @@ if TELEGRAM_BOT_TOKEN:
             log=_tg_log,
         )
         _tg_poller.start()
+
     except Exception as e:
         _tg_log(f"[tg] ERROR: init failed: {type(e).__name__}: {e}")
 else:
-    _tg_log("[tg] disabled (TELEGRAM_BOT_TOKEN not set)")
+    # поясняем, почему выключено
+    tg_enabled = False
+    try:
+        tg0 = _cfg0.get("telegram") if isinstance(_cfg0.get("telegram"), dict) else {}
+        tg0 = tg0 if isinstance(tg0, dict) else {}
+        tg_enabled = bool(tg0.get("enabled"))
+    except Exception:
+        tg_enabled = False
+
+    if not tg_enabled:
+        _tg_log("[tg] disabled (settings.telegram.enabled is false)")
+    else:
+        _tg_log("[tg] disabled (no TELEGRAM_BOT_TOKEN in env and no telegram.bot_token in settings.json)")
 
 # =========================
 # OCR helpers
