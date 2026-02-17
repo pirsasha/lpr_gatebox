@@ -9,7 +9,7 @@
 //        host.cpu_pct, host.mem_*_mb, host.disk_*.{used_mb,total_mb}, containers[].raw_mem
 
 import React, { useEffect, useMemo, useState } from "react";
-import { apiGet, apiPost, apiDownload, getSettings, putSettings } from "../api";
+import { apiGet, apiPost, apiDownload, getSettings, putSettings, mqttCheck, mqttTestPublish } from "../api";
 
 function fmtMB(x) {
   if (x == null || Number.isNaN(x)) return "—";
@@ -56,6 +56,10 @@ export default function SystemPage() {
   const [tgInfo, setTgInfo] = useState("");
   const [tgErr, setTgErr] = useState("");
   const [tgBusy, setTgBusy] = useState(false);
+  const [mqttInfo, setMqttInfo] = useState("");
+  const [mqttErr, setMqttErr] = useState("");
+  const [mqttBusy, setMqttBusy] = useState(false);
+
 
   async function loadHealth() {
     const h = await apiGet("/api/v1/health");
@@ -130,6 +134,38 @@ export default function SystemPage() {
       setTgErr(String(e?.message || e));
     } finally {
       setTgBusy(false);
+    }
+  }
+
+
+  async function onMqttCheck() {
+    try {
+      setMqttErr("");
+      setMqttInfo("");
+      setMqttBusy(true);
+      const r = await mqttCheck();
+      if (r?.ok) setMqttInfo(`MQTT доступен: ${r.host}:${r.port}`);
+      else setMqttErr(r?.error || "MQTT недоступен");
+    } catch (e) {
+      setMqttErr(String(e?.message || e));
+    } finally {
+      setMqttBusy(false);
+    }
+  }
+
+  async function onMqttTestPublish() {
+    try {
+      setMqttErr("");
+      setMqttInfo("");
+      setMqttBusy(true);
+      const topic = String(tgSettings?.mqtt?.topic || health?.mqtt?.topic || "gate/open");
+      const r = await mqttTestPublish(topic, { kind: "ui_test", source: "system_page", ts: Date.now() / 1000 });
+      if (r?.ok) setMqttInfo(`Тестовый топик отправлен: ${r.topic}`);
+      else setMqttErr(r?.error || "Не удалось отправить тестовый топик");
+    } catch (e) {
+      setMqttErr(String(e?.message || e));
+    } finally {
+      setMqttBusy(false);
     }
   }
 
@@ -209,6 +245,9 @@ export default function SystemPage() {
 
   const tgEnabled = !!tgSettings?.telegram?.enabled;
   const tgPaired = !!tgSettings?.telegram?.chat_id;
+  const tgBotToken = String(tgSettings?.telegram?.bot_token || "");
+  const tgBotUsername = tgBotToken.includes(":") ? tgBotToken.split(":")[0] : "";
+  const tgBotLink = tgBotUsername ? `https://t.me/${tgBotUsername}` : "";
 
   return (
     <div className="col">
@@ -258,6 +297,17 @@ export default function SystemPage() {
                 <div className="muted">Последний номер</div>
                 <div className="plateBig mono">{health?.last_plate || "—"}</div>
               </div>
+
+              <div className="row" style={{ marginTop: 12, gap: 10, flexWrap: "wrap" }}>
+                <button className="btn btn-ghost" type="button" onClick={onMqttCheck} disabled={mqttBusy}>
+                  Проверить MQTT
+                </button>
+                <button className="btn btn-primary" type="button" onClick={onMqttTestPublish} disabled={mqttBusy}>
+                  Отправить тестовый топик
+                </button>
+              </div>
+              {mqttErr ? <div className="hint" style={{ marginTop: 8, color: "#ff8a8a" }}>{mqttErr}</div> : null}
+              {mqttInfo ? <div className="hint" style={{ marginTop: 8 }}>{mqttInfo}</div> : null}
             </div>
           </div>
         </div>
@@ -392,9 +442,26 @@ export default function SystemPage() {
                 onChange={(e) => patchTelegram("telegram.bot_token", e.target.value)}
               />
               <div className="hint" style={{ marginTop: 8 }}>
-                1) Вставь токен → «Сохранить». 2) Открой бота и нажми <span className="mono">/start</span>. 3) Нажми
+                1) Вставь токен → «Сохранить». 2) Открой бота и нажми <span className="mono">/start</span>. 3) Проверь chat_id ниже и нажми
                 «Отправить тест».
               </div>
+              {tgBotLink ? (
+                <div className="hint" style={{ marginTop: 6 }}>
+                  Ссылка на бота: <a href={tgBotLink} target="_blank" rel="noreferrer">{tgBotLink}</a>
+                </div>
+              ) : null}
+            </div>
+
+            <div style={{ marginTop: 12 }}>
+              <div className="muted" style={{ marginBottom: 6 }}>
+                Chat ID (если известен; после <span className="mono">/start</span> можно оставить из авто-привязки)
+              </div>
+              <input
+                className="input mono"
+                value={tgSettings?.telegram?.chat_id == null ? "" : String(tgSettings?.telegram?.chat_id)}
+                placeholder="123456789"
+                onChange={(e) => patchTelegram("telegram.chat_id", e.target.value.trim() || null)}
+              />
             </div>
 
             {tgErr ? (
