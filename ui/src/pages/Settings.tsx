@@ -1,5 +1,7 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import { getSettings, putSettings, applySettings, mqttCheck, mqttTestPublish, apiPost, telegramBotInfo } from "../api";
+import React, { useEffect, useState } from "react";
+import { getSettings, putSettings, applySettings } from "../api";
 
 type Settings = any;
 type SectionKey = "basic" | "advanced" | "diagnostics";
@@ -24,6 +26,15 @@ function SliderRow({ label, hint, value, min, max, step, onChange }: SliderProps
       {hint ? <div className="hint muted" style={{ marginTop: 4 }}>{hint}</div> : null}
       <div className="row" style={{ marginTop: 6 }}>
         <input type="range" min={min} max={max} step={step} value={Number.isFinite(value) ? value : min} onChange={(e) => onChange(Number(e.target.value))} style={{ flex: 1 }} />
+        <input
+          type="range"
+          min={min}
+          max={max}
+          step={step}
+          value={Number.isFinite(value) ? value : min}
+          onChange={(e) => onChange(Number(e.target.value))}
+          style={{ flex: 1 }}
+        />
       </div>
     </div>
   );
@@ -488,6 +499,7 @@ export default function SettingsPage() {
                     <button className="btn btn-primary" type="button" onClick={onTelegramTest} disabled={telegramBusy}>Отправить тест</button>
                   </div>
                   {telegramMsg ? <div className="hint" style={{ marginTop: 8 }}>{telegramMsg}</div> : null}
+                  <TextRow label="MQTT topic" value={String(settings?.mqtt?.topic || "")} onChange={(v) => patch("mqtt.topic", v)} />
                 </div>
               </div>
 

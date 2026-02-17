@@ -565,6 +565,7 @@ def main() -> None:
         roi = parse_roi(last_roi_str, w, h)  # <- ROI from runtime settings/env
         roi_poly = parse_roi_poly_str(str(ROI_POLY_STR or ""), w, h)
         print(f"[rtsp_worker] first frame={w}x{h} ROI={roi} ROI_POLY_PTS={len(roi_poly)}")
+        print(f"[rtsp_worker] first frame={w}x{h} ROI={roi}")
 
     track = TrackState(track_id=0, last_seen_ts=0.0, box=None)
     events = PlateEventState(
@@ -752,6 +753,7 @@ def main() -> None:
             roi = parse_roi(last_roi_str, w, h)
             roi_poly = parse_roi_poly_str(str(globals().get("ROI_POLY_STR", "") or ""), w, h)
             print(f"[rtsp_worker] stream size => frame={w}x{h} ROI={roi} ROI_POLY_PTS={len(roi_poly)}")
+            print(f"[rtsp_worker] stream size => frame={w}x{h} ROI={roi}")
 
         x1, y1, x2, y2 = roi
         roi_frame = frame[y1:y2, x1:x2]
