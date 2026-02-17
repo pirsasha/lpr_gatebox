@@ -15,6 +15,8 @@ from typing import Any, Dict, Optional
 from fastapi import APIRouter
 from pydantic import BaseModel
 
+from app.integrations.telegram.client import TelegramClient
+
 router = APIRouter(prefix="/api/v1/telegram", tags=["telegram"])
 
 
@@ -55,3 +57,31 @@ def telegram_test(req: TgTestReq):
 
     _TG["enqueue"](req.text, photo_path)
     return {"ok": True, "queued": True, "with_photo": bool(photo_path)}
+
+@router.get("/bot_info")
+def telegram_bot_info():
+    if not _TG["get_cfg"]:
+        return {"ok": False, "error": "telegram_not_initialized"}
+
+    cfg = _TG["get_cfg"]()
+    tg = cfg.get("telegram") if isinstance(cfg.get("telegram"), dict) else {}
+    tg = tg if isinstance(tg, dict) else {}
+
+    token = str(tg.get("bot_token") or os.environ.get("TELEGRAM_BOT_TOKEN") or "").strip()
+    if not token:
+        return {"ok": False, "error": "no_token"}
+
+    try:
+        cli = TelegramClient(token=token)
+        js = cli.get_me()
+        res = js.get("result") if isinstance(js, dict) else {}
+        username = str((res or {}).get("username") or "").strip()
+        return {
+            "ok": True,
+            "username": username or None,
+            "link": f"https://t.me/{username}" if username else None,
+            "id": (res or {}).get("id"),
+            "first_name": (res or {}).get("first_name"),
+        }
+    except Exception as e:
+        return {"ok": False, "error": "bot_info_failed", "detail": str(e)}
