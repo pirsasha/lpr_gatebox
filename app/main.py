@@ -1,7 +1,7 @@
 # =========================================================
 # Файл: app/main.py
 # Проект: LPR GateBox
-# Версия: v0.3.5-fix-infer-soft-reject
+# Версия: v0.1
 # Изменено: 2026-02-09 (UTC+3)
 # Автор: Александр
 # ---------------------------------------------------------
@@ -41,11 +41,14 @@ from __future__ import annotations
 import os
 import json
 import time
+from pathlib import Path
+from threading import Lock
 from typing import Any, Dict, Iterable, Tuple
 
 import cv2
 import numpy as np
 from fastapi import FastAPI, UploadFile, File, HTTPException, Form
+from pydantic import BaseModel
 import paho.mqtt.client as mqtt
 
 from app.ocr_onnx import OnnxOcr
@@ -114,6 +117,70 @@ ENV_OCR_BAD_MIN_CONF = float(os.environ.get("OCR_BAD_MIN_CONF", "0.70"))
 # NEW: продуктовые флаги логирования
 DEBUG_LOG = os.environ.get("DEBUG_LOG", "0").strip().lower() in ("1", "true", "yes", "y", "on")
 PRINT_EVERY_RESPONSE = os.environ.get("PRINT_EVERY_RESPONSE", "0").strip().lower() in ("1", "true", "yes", "y", "on")
+
+RECENT_PLATES_DIR = Path(os.environ.get("RECENT_PLATES_DIR", "/config/live/recent_plates"))
+RECENT_PLATES_INDEX = RECENT_PLATES_DIR / "index.json"
+RECENT_PLATES_MAX = int(os.environ.get("RECENT_PLATES_MAX", "5") or "5")
+_recent_lock = Lock()
+
+
+def _save_recent_plate_crop(img_bgr: np.ndarray, payload: Dict[str, Any]) -> None:
+    """Сохраняем последние распознанные номера (ring buffer) для UI."""
+    try:
+        plate = str(payload.get("plate") or "").strip()
+        if not plate:
+            return
+
+        RECENT_PLATES_DIR.mkdir(parents=True, exist_ok=True)
+
+        ts_ms = int(float(payload.get("ts") or time.time()) * 1000.0)
+        safe_plate = "".join(ch for ch in plate if ch.isalnum()) or "PLATE"
+        fname = f"{ts_ms}_{safe_plate}.jpg"
+        fpath = RECENT_PLATES_DIR / fname
+
+        ok_jpg, buf = cv2.imencode(".jpg", img_bgr, [int(cv2.IMWRITE_JPEG_QUALITY), 88])
+        if not ok_jpg:
+            return
+        fpath.write_bytes(bytes(buf))
+
+        item = {
+            "ts": float(payload.get("ts") or time.time()),
+            "plate": plate,
+            "conf": float(payload.get("conf") or 0.0),
+            "reason": str(payload.get("reason") or ""),
+            "ok": bool(payload.get("ok")),
+            "file": fname,
+        }
+
+        with _recent_lock:
+            items = []
+            try:
+                if RECENT_PLATES_INDEX.exists():
+                    data = json.loads(RECENT_PLATES_INDEX.read_text(encoding="utf-8"))
+                    if isinstance(data, dict) and isinstance(data.get("items"), list):
+                        items = [x for x in data.get("items", []) if isinstance(x, dict)]
+            except Exception:
+                items = []
+
+            items.insert(0, item)
+            max_n = max(1, int(RECENT_PLATES_MAX))
+            extra = items[max_n:]
+            items = items[:max_n]
+
+            RECENT_PLATES_INDEX.write_text(
+                json.dumps({"ok": True, "items": items}, ensure_ascii=False, indent=2),
+                encoding="utf-8",
+            )
+
+            for ex in extra:
+                try:
+                    old = RECENT_PLATES_DIR / str(ex.get("file") or "")
+                    if old.exists() and old.is_file():
+                        old.unlink()
+                except Exception:
+                    pass
+    except Exception:
+        pass
 
 DEFAULT_SETTINGS: Dict[str, Any] = {
     "mqtt": {
@@ -240,6 +307,52 @@ def mqtt_publish(payload: Dict[str, Any]) -> bool:
     except Exception:
         _mqtt_disconnect()
         return False
+
+
+class MqttTestPublishIn(BaseModel):
+    topic: str | None = None
+    payload: Dict[str, Any] | None = None
+
+
+@app.post("/api/v1/mqtt/check")
+def api_mqtt_check():
+    if not bool(_mqtt_cfg.get("enabled")):
+        return {"ok": False, "error": "mqtt_disabled"}
+    try:
+        c = mqtt_client()
+        is_connected = bool(c.is_connected()) if hasattr(c, "is_connected") else True
+        return {
+            "ok": bool(is_connected),
+            "connected": bool(is_connected),
+            "host": str(_mqtt_cfg.get("host") or ""),
+            "port": int(_mqtt_cfg.get("port") or 1883),
+            "topic": str(_mqtt_cfg.get("topic") or "gate/open"),
+        }
+    except Exception as e:
+        _mqtt_disconnect()
+        return {"ok": False, "error": "connect_failed", "detail": str(e)}
+
+
+@app.post("/api/v1/mqtt/test_publish")
+def api_mqtt_test_publish(req: MqttTestPublishIn):
+    if not bool(_mqtt_cfg.get("enabled")):
+        return {"ok": False, "error": "mqtt_disabled"}
+    try:
+        c = mqtt_client()
+        topic = str(req.topic or _mqtt_cfg.get("topic") or "gate/open")
+        payload = req.payload if isinstance(req.payload, dict) else {"kind": "ui_test", "ts": time.time()}
+        payload.setdefault("kind", "ui_test")
+        payload.setdefault("ts", time.time())
+
+        info = c.publish(topic, json.dumps(payload, ensure_ascii=False))
+        rc = int(getattr(info, "rc", 0))
+        ok = rc == 0
+        if not ok:
+            _mqtt_disconnect()
+        return {"ok": ok, "topic": topic, "rc": rc}
+    except Exception as e:
+        _mqtt_disconnect()
+        return {"ok": False, "error": "publish_failed", "detail": str(e)}
 
 
 # =========================
@@ -883,6 +996,10 @@ async def infer(
     if payload.get("infer_ok") and decision.get("ok") and not noise:
         published = mqtt_publish(payload)
     payload["mqtt_published"] = bool(published)
+
+    # Last recognized crops for UI (ring buffer, best-effort)
+    if payload.get("infer_ok") and payload.get("plate") and payload.get("valid") and not noise:
+        _save_recent_plate_crop(img, payload)
 
     # Telegram notify: только при ok и не мусор (не блокируем infer)
     try:
