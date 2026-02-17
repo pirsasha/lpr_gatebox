@@ -560,12 +560,12 @@ def main() -> None:
     h = 0
     roi = (0, 0, 0, 0)
     last_roi_str = str(ROI_STR or "")
+    last_roi_poly_str = str(ROI_POLY_STR or "")
     if frame0 is not None:
         h, w = frame0.shape[:2]
         roi = parse_roi(last_roi_str, w, h)  # <- ROI from runtime settings/env
-        roi_poly = parse_roi_poly_str(str(ROI_POLY_STR or ""), w, h)
+        roi_poly = parse_roi_poly_str(last_roi_poly_str, w, h)
         print(f"[rtsp_worker] first frame={w}x{h} ROI={roi} ROI_POLY_PTS={len(roi_poly)}")
-        print(f"[rtsp_worker] first frame={w}x{h} ROI={roi}")
 
     track = TrackState(track_id=0, last_seen_ts=0.0, box=None)
     events = PlateEventState(
@@ -693,8 +693,11 @@ def main() -> None:
                 print(f"[rtsp_worker] CHG: ROI_STR -> {last_roi_str!r} ROI={roi}")
 
             cur_roi_poly_str = str(globals().get("ROI_POLY_STR", "") or "")
-            if w > 0 and h > 0:
-                roi_poly = parse_roi_poly_str(cur_roi_poly_str, w, h)
+            if cur_roi_poly_str != last_roi_poly_str:
+                last_roi_poly_str = cur_roi_poly_str
+                if w > 0 and h > 0:
+                    roi_poly = parse_roi_poly_str(last_roi_poly_str, w, h)
+                print(f"[rtsp_worker] CHG: ROI_POLY_STR -> pts={len(roi_poly)}")
 
 
         # disabled -> heartbeat only
@@ -753,7 +756,6 @@ def main() -> None:
             roi = parse_roi(last_roi_str, w, h)
             roi_poly = parse_roi_poly_str(str(globals().get("ROI_POLY_STR", "") or ""), w, h)
             print(f"[rtsp_worker] stream size => frame={w}x{h} ROI={roi} ROI_POLY_PTS={len(roi_poly)}")
-            print(f"[rtsp_worker] stream size => frame={w}x{h} ROI={roi}")
 
         x1, y1, x2, y2 = roi
         roi_frame = frame[y1:y2, x1:x2]
