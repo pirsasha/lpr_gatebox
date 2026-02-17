@@ -155,3 +155,15 @@ export async function addWhitelistPlate(plate) {
   }
   return { ok: true, plate: p };
 }
+
+export function mqttCheck() {
+  return apiPost(`${API_V1}/mqtt/check`, {});
+}
+
+export function mqttTestPublish(topic, payload) {
+  return apiPost(`${API_V1}/mqtt/test_publish`, { topic, payload });
+}
+
+export function telegramBotInfo() {
+  return apiGet(`${API_V1}/telegram/bot_info`);
+}

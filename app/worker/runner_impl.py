@@ -21,7 +21,7 @@ from typing import Dict, List, Optional, Tuple
 import cv2
 import numpy as np
 
-from app.worker.settings import env_bool, env_float, env_int, env_str, parse_roi, expand_box
+from app.worker.settings import env_bool, env_float, env_int, env_str, parse_roi, parse_roi_poly_str, point_in_polygon, expand_box
 from app.worker.forensics import ensure_dir, atomic_write_bytes, atomic_write_json
 from app.worker.http_client import infer_base_url as _infer_base_url
 from app.worker.http_client import post_heartbeat as _post_heartbeat
@@ -138,6 +138,7 @@ _OVERRIDABLE: dict[str, tuple[str, callable]] = {
 
     # ROI (scene crop)
     "ROI_STR": ("str", str),
+    "ROI_POLY_STR": ("str", str),
 }
 
 _REQUIRES_REBUILD_DETECTOR = {"DET_CONF", "DET_IOU", "DET_IMG_SIZE"}
@@ -209,6 +210,7 @@ def _apply_runtime_overrides(overrides: dict | None, last: dict) -> tuple[dict, 
 
 # ROI
 ROI_STR = env_str("ROI_STR", env_str("ROI", ""))
+ROI_POLY_STR = env_str("ROI_POLY_STR", "")
 
 OCR_CROP_MODE = env_str("OCR_CROP_MODE", "yolo").lower()
 SEND_ON_NO_DET = env_bool("SEND_ON_NO_DET", False)
@@ -561,6 +563,8 @@ def main() -> None:
     if frame0 is not None:
         h, w = frame0.shape[:2]
         roi = parse_roi(last_roi_str, w, h)  # <- ROI from runtime settings/env
+        roi_poly = parse_roi_poly_str(str(ROI_POLY_STR or ""), w, h)
+        print(f"[rtsp_worker] first frame={w}x{h} ROI={roi} ROI_POLY_PTS={len(roi_poly)}")
         print(f"[rtsp_worker] first frame={w}x{h} ROI={roi}")
 
     track = TrackState(track_id=0, last_seen_ts=0.0, box=None)
@@ -606,6 +610,9 @@ def main() -> None:
     auto_profile: Optional[str] = None
     auto_metrics: Dict[str, float] = {}
 
+    runtime_overrides_last: dict = {}
+    roi_poly: List[Tuple[int, int]] = parse_roi_poly_str(str(ROI_POLY_STR or ""), max(1, w), max(1, h)) if (w > 0 and h > 0) else []
+
     while True:
         now = time.time()
 
@@ -624,7 +631,7 @@ def main() -> None:
                     # settings.rtsp_worker.overrides = {"DET_CONF": 0.35, "READ_FPS": 15, ...}
                     
                     overrides = _get_settings_overrides(s_all)
-                    flags = _apply_runtime_overrides(overrides)
+                    runtime_overrides_last, flags = _apply_runtime_overrides(overrides, runtime_overrides_last)
             except Exception:
                 # settings poll не должен ломать основной цикл
                 pass
@@ -685,6 +692,11 @@ def main() -> None:
                     roi = parse_roi(last_roi_str, w, h)
                 print(f"[rtsp_worker] CHG: ROI_STR -> {last_roi_str!r} ROI={roi}")
 
+            cur_roi_poly_str = str(globals().get("ROI_POLY_STR", "") or "")
+            if w > 0 and h > 0:
+                roi_poly = parse_roi_poly_str(cur_roi_poly_str, w, h)
+
+
         # disabled -> heartbeat only
         if not current_enabled or grabber is None:
             if HB_EVERY_SEC > 0 and (now - hb_last) >= HB_EVERY_SEC:
@@ -739,6 +751,8 @@ def main() -> None:
         if (fw, fh) != (w, h) or w == 0 or h == 0:
             w, h = fw, fh
             roi = parse_roi(last_roi_str, w, h)
+            roi_poly = parse_roi_poly_str(str(globals().get("ROI_POLY_STR", "") or ""), w, h)
+            print(f"[rtsp_worker] stream size => frame={w}x{h} ROI={roi} ROI_POLY_PTS={len(roi_poly)}")
             print(f"[rtsp_worker] stream size => frame={w}x{h} ROI={roi}")
 
         x1, y1, x2, y2 = roi
@@ -806,6 +820,13 @@ def main() -> None:
 
         if best_full is None and track.box is not None and (now - track.last_seen_ts) <= TRACK_HOLD_SEC:
             best_full = track.box
+
+        # polygon ROI gate (optional): detection center must be inside polygon
+        if best_full is not None and roi_poly:
+            cx = 0.5 * (float(best_full.x1) + float(best_full.x2))
+            cy = 0.5 * (float(best_full.y1) + float(best_full.y2))
+            if not point_in_polygon(cx, cy, roi_poly):
+                best_full = None
 
         # live preview
         if LIVE_EVERY_SEC > 0 and (now - last_live_write) >= LIVE_EVERY_SEC:

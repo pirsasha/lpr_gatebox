@@ -588,6 +588,92 @@ def _mask_settings_for_get(settings: Dict[str, Any]) -> Dict[str, Any]:
     return s
 
 
+
+
+def _as_float(v: Any, field: str) -> float:
+    try:
+        return float(v)
+    except Exception:
+        raise HTTPException(status_code=400, detail=f"{field}: ожидалось число")
+
+
+def _as_int(v: Any, field: str) -> int:
+    try:
+        return int(float(v))
+    except Exception:
+        raise HTTPException(status_code=400, detail=f"{field}: ожидалось целое число")
+
+
+def _check_range(v: float, field: str, min_v: float, max_v: float) -> None:
+    if v < min_v or v > max_v:
+        raise HTTPException(status_code=400, detail=f"{field}: допустимый диапазон {min_v}..{max_v}")
+
+
+def _validate_roi_poly_str(v: Any, field: str) -> None:
+    s = str(v or "").strip()
+    if not s:
+        return
+    pts = []
+    for raw in s.split(";"):
+        p = raw.strip()
+        if not p:
+            continue
+        xy = [x.strip() for x in p.split(",")]
+        if len(xy) != 2:
+            raise HTTPException(status_code=400, detail=f"{field}: формат x1,y1;x2,y2;...")
+        try:
+            x = float(xy[0]); y = float(xy[1])
+        except Exception:
+            raise HTTPException(status_code=400, detail=f"{field}: координаты должны быть числами")
+        pts.append((x, y))
+    if pts and len(pts) < 3:
+        raise HTTPException(status_code=400, detail=f"{field}: нужно минимум 3 точки")
+
+
+def _validate_settings_patch(patch: Dict[str, Any]) -> None:
+    if not isinstance(patch, dict):
+        return
+
+    gate = patch.get("gate")
+    if isinstance(gate, dict):
+        if "min_conf" in gate:
+            _check_range(_as_float(gate.get("min_conf"), "gate.min_conf"), "gate.min_conf", 0.5, 0.99)
+        if "confirm_n" in gate:
+            _check_range(float(_as_int(gate.get("confirm_n"), "gate.confirm_n")), "gate.confirm_n", 1, 10)
+        if "confirm_window_sec" in gate:
+            _check_range(_as_float(gate.get("confirm_window_sec"), "gate.confirm_window_sec"), "gate.confirm_window_sec", 0.5, 8.0)
+        if "cooldown_sec" in gate:
+            _check_range(_as_float(gate.get("cooldown_sec"), "gate.cooldown_sec"), "gate.cooldown_sec", 1.0, 120.0)
+        if "region_stab_window_sec" in gate:
+            _check_range(_as_float(gate.get("region_stab_window_sec"), "gate.region_stab_window_sec"), "gate.region_stab_window_sec", 0.5, 8.0)
+        if "region_stab_min_hits" in gate:
+            _check_range(float(_as_int(gate.get("region_stab_min_hits"), "gate.region_stab_min_hits")), "gate.region_stab_min_hits", 1, 10)
+        if "region_stab_min_ratio" in gate:
+            _check_range(_as_float(gate.get("region_stab_min_ratio"), "gate.region_stab_min_ratio"), "gate.region_stab_min_ratio", 0.3, 1.0)
+
+    rt = patch.get("rtsp_worker")
+    if isinstance(rt, dict):
+        ov = rt.get("overrides")
+        if isinstance(ov, dict):
+            if "READ_FPS" in ov:
+                _check_range(_as_float(ov.get("READ_FPS"), "rtsp_worker.overrides.READ_FPS"), "rtsp_worker.overrides.READ_FPS", 1.0, 30.0)
+            if "DET_FPS" in ov:
+                _check_range(_as_float(ov.get("DET_FPS"), "rtsp_worker.overrides.DET_FPS"), "rtsp_worker.overrides.DET_FPS", 0.5, 15.0)
+            if "SEND_FPS" in ov:
+                _check_range(_as_float(ov.get("SEND_FPS"), "rtsp_worker.overrides.SEND_FPS"), "rtsp_worker.overrides.SEND_FPS", 0.5, 15.0)
+            if "DET_CONF" in ov:
+                _check_range(_as_float(ov.get("DET_CONF"), "rtsp_worker.overrides.DET_CONF"), "rtsp_worker.overrides.DET_CONF", 0.05, 0.95)
+            if "DET_IOU" in ov:
+                _check_range(_as_float(ov.get("DET_IOU"), "rtsp_worker.overrides.DET_IOU"), "rtsp_worker.overrides.DET_IOU", 0.1, 0.9)
+            if "JPEG_QUALITY" in ov:
+                _check_range(float(_as_int(ov.get("JPEG_QUALITY"), "rtsp_worker.overrides.JPEG_QUALITY")), "rtsp_worker.overrides.JPEG_QUALITY", 60, 100)
+            if "LOG_EVERY_SEC" in ov:
+                _check_range(_as_float(ov.get("LOG_EVERY_SEC"), "rtsp_worker.overrides.LOG_EVERY_SEC"), "rtsp_worker.overrides.LOG_EVERY_SEC", 0.0, 120.0)
+            if "SAVE_EVERY" in ov:
+                _check_range(float(_as_int(ov.get("SAVE_EVERY"), "rtsp_worker.overrides.SAVE_EVERY")), "rtsp_worker.overrides.SAVE_EVERY", 0, 300)
+            if "ROI_POLY_STR" in ov:
+                _validate_roi_poly_str(ov.get("ROI_POLY_STR"), "rtsp_worker.overrides.ROI_POLY_STR")
+
 def _drop_empty_mqtt_pass(patch: Dict[str, Any]) -> Dict[str, Any]:
     """mqtt.pass == '' или masked '***' не должны затирать сохранённый пароль."""
     if not isinstance(patch, dict):
@@ -612,6 +698,7 @@ def api_put_settings(patch: Dict[str, Any]):
     data_in = _extract_settings_payload(patch)
     data_in = _strip_nones(data_in)
     data_in = _drop_empty_mqtt_pass(data_in)
+    _validate_settings_patch(data_in)
     data = st.update(data_in)
     return {"ok": True, "settings": _mask_settings_for_get(data)}
 

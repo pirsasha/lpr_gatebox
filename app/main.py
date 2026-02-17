@@ -48,6 +48,7 @@ from typing import Any, Dict, Iterable, Tuple
 import cv2
 import numpy as np
 from fastapi import FastAPI, UploadFile, File, HTTPException, Form
+from pydantic import BaseModel
 import paho.mqtt.client as mqtt
 
 from app.ocr_onnx import OnnxOcr
@@ -306,6 +307,52 @@ def mqtt_publish(payload: Dict[str, Any]) -> bool:
     except Exception:
         _mqtt_disconnect()
         return False
+
+
+class MqttTestPublishIn(BaseModel):
+    topic: str | None = None
+    payload: Dict[str, Any] | None = None
+
+
+@app.post("/api/v1/mqtt/check")
+def api_mqtt_check():
+    if not bool(_mqtt_cfg.get("enabled")):
+        return {"ok": False, "error": "mqtt_disabled"}
+    try:
+        c = mqtt_client()
+        is_connected = bool(c.is_connected()) if hasattr(c, "is_connected") else True
+        return {
+            "ok": bool(is_connected),
+            "connected": bool(is_connected),
+            "host": str(_mqtt_cfg.get("host") or ""),
+            "port": int(_mqtt_cfg.get("port") or 1883),
+            "topic": str(_mqtt_cfg.get("topic") or "gate/open"),
+        }
+    except Exception as e:
+        _mqtt_disconnect()
+        return {"ok": False, "error": "connect_failed", "detail": str(e)}
+
+
+@app.post("/api/v1/mqtt/test_publish")
+def api_mqtt_test_publish(req: MqttTestPublishIn):
+    if not bool(_mqtt_cfg.get("enabled")):
+        return {"ok": False, "error": "mqtt_disabled"}
+    try:
+        c = mqtt_client()
+        topic = str(req.topic or _mqtt_cfg.get("topic") or "gate/open")
+        payload = req.payload if isinstance(req.payload, dict) else {"kind": "ui_test", "ts": time.time()}
+        payload.setdefault("kind", "ui_test")
+        payload.setdefault("ts", time.time())
+
+        info = c.publish(topic, json.dumps(payload, ensure_ascii=False))
+        rc = int(getattr(info, "rc", 0))
+        ok = rc == 0
+        if not ok:
+            _mqtt_disconnect()
+        return {"ok": ok, "topic": topic, "rc": rc}
+    except Exception as e:
+        _mqtt_disconnect()
+        return {"ok": False, "error": "publish_failed", "detail": str(e)}
 
 
 # =========================

@@ -1,3 +1,5 @@
+import React, { useEffect, useMemo, useRef, useState } from "react";
+import { getSettings, putSettings, applySettings, mqttCheck, mqttTestPublish, apiPost, telegramBotInfo } from "../api";
 import React, { useEffect, useState } from "react";
 import { getSettings, putSettings, applySettings } from "../api";
 
@@ -23,6 +25,7 @@ function SliderRow({ label, hint, value, min, max, step, onChange }: SliderProps
       </div>
       {hint ? <div className="hint muted" style={{ marginTop: 4 }}>{hint}</div> : null}
       <div className="row" style={{ marginTop: 6 }}>
+        <input type="range" min={min} max={max} step={step} value={Number.isFinite(value) ? value : min} onChange={(e) => onChange(Number(e.target.value))} style={{ flex: 1 }} />
         <input
           type="range"
           min={min}
@@ -65,12 +68,73 @@ function TextRow({ label, value, onChange }: { label: string; value: string; onC
   );
 }
 
+function mergeDeep(base: any, patch: any): any {
+  if (patch == null || typeof patch !== "object" || Array.isArray(patch)) return patch;
+  const out = JSON.parse(JSON.stringify(base || {}));
+  for (const [k, v] of Object.entries(patch)) {
+    if (v != null && typeof v === "object" && !Array.isArray(v)) {
+      out[k] = mergeDeep(out[k], v);
+    } else {
+      out[k] = v;
+    }
+  }
+  return out;
+}
+
+const DAY_PROFILE = {
+  gate: { min_conf: 0.8, confirm_n: 2, confirm_window_sec: 2.0, cooldown_sec: 15 },
+  rtsp_worker: { overrides: { DET_CONF: 0.28, DET_IOU: 0.45, READ_FPS: 15, DET_FPS: 3, SEND_FPS: 3, AUTO_MODE: 0, AUTO_DROP_ON_BLUR: 0, AUTO_DROP_ON_GLARE: 0, JPEG_QUALITY: 92 } },
+};
+
+const NIGHT_PROFILE = {
+  gate: { min_conf: 0.86, confirm_n: 3, confirm_window_sec: 2.8, cooldown_sec: 18 },
+  rtsp_worker: { overrides: { DET_CONF: 0.35, DET_IOU: 0.45, READ_FPS: 12, DET_FPS: 2, SEND_FPS: 2, AUTO_MODE: 1, AUTO_DROP_ON_BLUR: 1, AUTO_DROP_ON_GLARE: 1, JPEG_QUALITY: 95 } },
+};
+
+function extractRuntimeSnapshot(s: any) {
+  return {
+    gate: {
+      min_conf: s?.gate?.min_conf,
+      confirm_n: s?.gate?.confirm_n,
+      confirm_window_sec: s?.gate?.confirm_window_sec,
+      cooldown_sec: s?.gate?.cooldown_sec,
+      region_stab: s?.gate?.region_stab,
+      region_stab_window_sec: s?.gate?.region_stab_window_sec,
+      region_stab_min_hits: s?.gate?.region_stab_min_hits,
+      region_stab_min_ratio: s?.gate?.region_stab_min_ratio,
+    },
+    rtsp_worker: {
+      overrides: {
+        READ_FPS: s?.rtsp_worker?.overrides?.READ_FPS,
+        DET_FPS: s?.rtsp_worker?.overrides?.DET_FPS,
+        SEND_FPS: s?.rtsp_worker?.overrides?.SEND_FPS,
+        DET_CONF: s?.rtsp_worker?.overrides?.DET_CONF,
+        DET_IOU: s?.rtsp_worker?.overrides?.DET_IOU,
+        JPEG_QUALITY: s?.rtsp_worker?.overrides?.JPEG_QUALITY,
+        AUTO_MODE: s?.rtsp_worker?.overrides?.AUTO_MODE,
+        AUTO_DROP_ON_BLUR: s?.rtsp_worker?.overrides?.AUTO_DROP_ON_BLUR,
+        AUTO_DROP_ON_GLARE: s?.rtsp_worker?.overrides?.AUTO_DROP_ON_GLARE,
+        TRACK_ENABLE: s?.rtsp_worker?.overrides?.TRACK_ENABLE,
+      },
+    },
+  };
+}
+
 export default function SettingsPage() {
   const [settings, setSettings] = useState<Settings | null>(null);
   const [dirty, setDirty] = useState(false);
   const [err, setErr] = useState<string | null>(null);
   const [info, setInfo] = useState<string | null>(null);
   const [section, setSection] = useState<SectionKey>("basic");
+  const [profileName, setProfileName] = useState("my_profile");
+  const [selectedCustom, setSelectedCustom] = useState("");
+  const importInputRef = useRef<HTMLInputElement | null>(null);
+  const [mqttDiagBusy, setMqttDiagBusy] = useState(false);
+  const [mqttDiagMsg, setMqttDiagMsg] = useState<string | null>(null);
+  const [telegramBusy, setTelegramBusy] = useState(false);
+  const [telegramMsg, setTelegramMsg] = useState<string | null>(null);
+  const [botLink, setBotLink] = useState<string>("");
+
 
   const load = async () => {
     try {
@@ -84,7 +148,7 @@ export default function SettingsPage() {
     }
   };
 
-  useEffect(() => { load(); }, []);
+  useEffect(() => { load(); fetchBotInfo(); }, []);
 
   const patch = (path: string, value: any) => {
     setSettings((prev: any) => {
@@ -102,6 +166,105 @@ export default function SettingsPage() {
     setDirty(true);
   };
 
+  const applySnapshot = (name: string, snap: any) => {
+    setSettings((prev: any) => {
+      const base = JSON.parse(JSON.stringify(prev || {}));
+      const before = extractRuntimeSnapshot(base);
+      const withSnap = mergeDeep(base, snap || {});
+      withSnap.ui = withSnap.ui || {};
+      withSnap.ui.active_profile = name;
+      withSnap.ui.last_profile_snapshot = before;
+      return withSnap;
+    });
+    setDirty(true);
+    setInfo(`Профиль «${name}» применён (не забудь Сохранить/Применить).`);
+  };
+
+  const saveCurrentAsProfile = () => {
+    const name = String(profileName || "").trim();
+    if (!name) {
+      setErr("Введите имя профиля");
+      return;
+    }
+    setErr(null);
+    setSettings((prev: any) => {
+      const next = JSON.parse(JSON.stringify(prev || {}));
+      next.ui = next.ui || {};
+      next.ui.profiles = next.ui.profiles || {};
+      next.ui.profiles[name] = extractRuntimeSnapshot(next);
+      return next;
+    });
+    setDirty(true);
+    setSelectedCustom(name);
+    setInfo(`Профиль «${name}» сохранён.`);
+  };
+
+  const applyCustomProfile = () => {
+    if (!settings) return;
+    const name = String(selectedCustom || "").trim();
+    const snap = settings?.ui?.profiles?.[name];
+    if (!name || !snap) {
+      setErr("Выбери сохранённый профиль");
+      return;
+    }
+    setErr(null);
+    applySnapshot(name, snap);
+  };
+
+  const rollbackProfile = () => {
+    if (!settings?.ui?.last_profile_snapshot) {
+      setErr("Нет снимка для отката — сначала примени профиль");
+      return;
+    }
+    setErr(null);
+    applySnapshot("rollback", settings.ui.last_profile_snapshot);
+  };
+
+  const exportProfiles = () => {
+    try {
+      const payload = {
+        version: 1,
+        exported_at: new Date().toISOString(),
+        active_profile: settings?.ui?.active_profile || null,
+        profiles: settings?.ui?.profiles || {},
+      };
+      const blob = new Blob([JSON.stringify(payload, null, 2)], { type: "application/json" });
+      const a = document.createElement("a");
+      a.href = URL.createObjectURL(blob);
+      a.download = "lpr_profiles.json";
+      a.click();
+      URL.revokeObjectURL(a.href);
+      setInfo("Профили экспортированы в JSON.");
+      setErr(null);
+    } catch (e: any) {
+      setErr(e?.message || "Не удалось экспортировать профили");
+    }
+  };
+
+  const importProfilesFromFile = async (file: File | null) => {
+    if (!file) return;
+    try {
+      const text = await file.text();
+      const data = JSON.parse(text);
+      const imported = data?.profiles;
+      if (!imported || typeof imported !== "object") {
+        setErr("Файл профилей некорректный: нет блока profiles");
+        return;
+      }
+      setSettings((prev: any) => {
+        const next = JSON.parse(JSON.stringify(prev || {}));
+        next.ui = next.ui || {};
+        next.ui.profiles = { ...(next.ui.profiles || {}), ...imported };
+        return next;
+      });
+      setDirty(true);
+      setErr(null);
+      setInfo("Профили импортированы. Нажми Сохранить/Применить.");
+    } catch (e: any) {
+      setErr(e?.message || "Не удалось импортировать профили");
+    }
+  };
+
   const onSave = async () => {
     try {
       const r = await putSettings(settings);
@@ -111,6 +274,60 @@ export default function SettingsPage() {
       setInfo("Сохранено в settings.json");
     } catch (e: any) {
       setErr(e?.message || String(e));
+    }
+  };
+
+  const fetchBotInfo = async () => {
+    try {
+      const r = await telegramBotInfo();
+      if (r?.ok && r?.link) setBotLink(String(r.link));
+      else setBotLink("");
+    } catch {
+      setBotLink("");
+    }
+  };
+
+  const onMqttCheck = async () => {
+    try {
+      setMqttDiagBusy(true);
+      setMqttDiagMsg(null);
+      const r = await mqttCheck();
+      if (r?.ok) setMqttDiagMsg(`✅ MQTT доступен: ${r.host}:${r.port}`);
+      else setMqttDiagMsg(`❌ MQTT: ${r?.error || "недоступен"}`);
+    } catch (e: any) {
+      setMqttDiagMsg(`❌ MQTT: ${e?.message || String(e)}`);
+    } finally {
+      setMqttDiagBusy(false);
+    }
+  };
+
+  const onMqttTestTopic = async () => {
+    try {
+      setMqttDiagBusy(true);
+      setMqttDiagMsg(null);
+      const topic = String(settings?.mqtt?.topic || "gate/open");
+      const r = await mqttTestPublish(topic, { kind: "ui_test", source: "settings_page", ts: Date.now() / 1000 });
+      if (r?.ok) setMqttDiagMsg(`✅ Тестовый топик отправлен: ${r.topic}`);
+      else setMqttDiagMsg(`❌ Тестовый топик: ${r?.error || "ошибка"}`);
+    } catch (e: any) {
+      setMqttDiagMsg(`❌ Тестовый топик: ${e?.message || String(e)}`);
+    } finally {
+      setMqttDiagBusy(false);
+    }
+  };
+
+  const onTelegramTest = async () => {
+    try {
+      setTelegramBusy(true);
+      setTelegramMsg(null);
+      const withPhoto = !!(settings?.telegram?.send_photo ?? true);
+      const r = await apiPost("/api/v1/telegram/test", { text: "✅ GateBox: тест Telegram (из UI → Настройки)", with_photo: withPhoto });
+      if (r?.ok) setTelegramMsg("✅ Тест отправлен. Проверь Telegram.");
+      else setTelegramMsg(`❌ Telegram: ${r?.error || "ошибка"}`);
+    } catch (e: any) {
+      setTelegramMsg(`❌ Telegram: ${e?.message || String(e)}`);
+    } finally {
+      setTelegramBusy(false);
     }
   };
 
@@ -129,6 +346,7 @@ export default function SettingsPage() {
   }
 
   const ov = settings?.rtsp_worker?.overrides || {};
+  const customProfiles = useMemo(() => Object.keys(settings?.ui?.profiles || {}), [settings]);
 
   return (
     <div className="col">
@@ -150,6 +368,46 @@ export default function SettingsPage() {
         <div className="cardBody">
           {err ? <div className="alert alert-error mono">{err}</div> : null}
           {info ? <div className="alert mono">{info}</div> : null}
+
+          <div className="card" style={{ marginBottom: 12 }}>
+            <div className="cardHead"><div className="cardTitle">Профили (день / ночь / свои)</div></div>
+            <div className="cardBody">
+              <div className="row" style={{ gap: 10, flexWrap: "wrap" }}>
+                <button className="btn" onClick={() => applySnapshot("day", DAY_PROFILE)}>Применить «День»</button>
+                <button className="btn" onClick={() => applySnapshot("night", NIGHT_PROFILE)}>Применить «Ночь»</button>
+                <button className="btn" onClick={rollbackProfile}>Откатить последний профиль</button>
+                <span className="muted mono">active: {String(settings?.ui?.active_profile || "—")}</span>
+              </div>
+
+              <div className="row" style={{ marginTop: 10, gap: 10, flexWrap: "wrap" }}>
+                <input className="input mono" style={{ width: 220 }} value={profileName} onChange={(e) => setProfileName(e.target.value)} placeholder="имя профиля" />
+                <button className="btn" onClick={saveCurrentAsProfile}>Сохранить текущие как профиль</button>
+                <select className="input mono" style={{ width: 220 }} value={selectedCustom} onChange={(e) => setSelectedCustom(e.target.value)}>
+                  <option value="">— выбрать свой профиль —</option>
+                  {customProfiles.map((k) => <option key={k} value={k}>{k}</option>)}
+                </select>
+                <button className="btn" onClick={applyCustomProfile}>Применить свой профиль</button>
+                <button className="btn" onClick={exportProfiles}>Экспорт профилей</button>
+                <button className="btn" onClick={() => importInputRef.current?.click()}>Импорт профилей</button>
+                <input
+                  ref={importInputRef}
+                  type="file"
+                  accept="application/json,.json"
+                  style={{ display: "none" }}
+                  onChange={(e) => {
+                    const f = e.target.files?.[0] || null;
+                    importProfilesFromFile(f);
+                    e.currentTarget.value = "";
+                  }}
+                />
+              </div>
+
+              <div className="hint muted" style={{ marginTop: 8 }}>
+                Профили меняют только рабочие параметры распознавания/детекции. Можно экспортировать/импортировать JSON. После любых изменений нажмите
+                <span className="mono"> Сохранить</span> и <span className="mono">Применить</span>.
+              </div>
+            </div>
+          </div>
 
           {section === "basic" ? (
             <div className="grid2">
@@ -217,6 +475,30 @@ export default function SettingsPage() {
                   <TextRow label="MQTT host" value={String(settings?.mqtt?.host || "")} onChange={(v) => patch("mqtt.host", v)} />
                   <TextRow label="MQTT port" value={String(settings?.mqtt?.port ?? "")} onChange={(v) => patch("mqtt.port", Number(v || 0))} />
                   <TextRow label="MQTT user" value={String(settings?.mqtt?.user || "")} onChange={(v) => patch("mqtt.user", v)} />
+                  <TextRow label="MQTT pass" value={String(settings?.mqtt?.pass || "")} onChange={(v) => patch("mqtt.pass", v)} />
+                  <TextRow label="MQTT topic" value={String(settings?.mqtt?.topic || "")} onChange={(v) => patch("mqtt.topic", v)} />
+                  <div className="row" style={{ gap: 10, flexWrap: "wrap" }}>
+                    <button className="btn btn-ghost" type="button" onClick={onMqttCheck} disabled={mqttDiagBusy}>Проверить связь</button>
+                    <button className="btn btn-primary" type="button" onClick={onMqttTestTopic} disabled={mqttDiagBusy}>Отправить тестовый топик</button>
+                  </div>
+                  {mqttDiagMsg ? <div className="hint" style={{ marginTop: 8 }}>{mqttDiagMsg}</div> : null}
+                </div>
+              </div>
+
+              <div className="card">
+                <div className="cardHead"><div className="cardTitle">Telegram</div></div>
+                <div className="cardBody">
+                  <ToggleRow label="Включить Telegram" checked={!!settings?.telegram?.enabled} onChange={(v) => patch("telegram.enabled", v)} />
+                  <ToggleRow label="Присылать фото" checked={!!(settings?.telegram?.send_photo ?? true)} onChange={(v) => patch("telegram.send_photo", v)} />
+                  <TextRow label="Bot token" value={String(settings?.telegram?.bot_token || "")} onChange={(v) => patch("telegram.bot_token", v)} />
+                  <TextRow label="Chat ID" value={String(settings?.telegram?.chat_id ?? "")} onChange={(v) => patch("telegram.chat_id", v.trim() || null)} />
+                  {botLink ? <div className="hint" style={{ marginBottom: 8 }}>Ссылка на бота: <a href={botLink} target="_blank" rel="noreferrer">{botLink}</a></div> : null}
+                  <div className="hint" style={{ marginBottom: 8 }}>Открой бота, нажми <span className="mono">/start</span>, после чего проверь/заполни <span className="mono">Chat ID</span>.</div>
+                  <div className="row" style={{ gap: 10, flexWrap: "wrap" }}>
+                    <button className="btn btn-ghost" type="button" onClick={fetchBotInfo} disabled={telegramBusy}>Обновить ссылку на бота</button>
+                    <button className="btn btn-primary" type="button" onClick={onTelegramTest} disabled={telegramBusy}>Отправить тест</button>
+                  </div>
+                  {telegramMsg ? <div className="hint" style={{ marginTop: 8 }}>{telegramMsg}</div> : null}
                   <TextRow label="MQTT topic" value={String(settings?.mqtt?.topic || "")} onChange={(v) => patch("mqtt.topic", v)} />
                 </div>
               </div>

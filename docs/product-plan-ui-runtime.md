@@ -20,8 +20,41 @@
 - Expand runtime-configurable knobs (move critical ENV options to settings).
 - Add UI sections: camera, detection, OCR, gate, integrations.
 - Add import/export settings and reset presets (day/night profiles).
+- Profile presets in Settings UI (day/night + custom save/apply + rollback + import/export profiles JSON).
 
 ## Iteration 5
 - UX hardening for non-technical testers.
 - Add smoke E2E scenarios for core setup flow.
 - Add release checklist and operator guide.
+
+
+## Iteration 6
+- Backend validation for settings ranges (`/api/v1/settings`): reject out-of-range values with clear field-level errors.
+- Validate polygon ROI format (`ROI_POLY_STR`) and require at least 3 points.
+- Keep UI/runtime behavior unchanged but safer against invalid API payloads.
+
+
+## Iteration 7
+- Add smoke script for runtime/UI API sanity checks (`scripts/smoke_runtime_ui.sh`).
+- Add release checklist and short operator guide in Russian.
+
+
+## Iteration 8
+- В разделе настроек добавить MQTT-диагностику: кнопка проверки связи с брокером и кнопка отправки тестового топика.
+- В Telegram-настройках добавить явное поле `chat_id` (не только токен), чтобы можно было задать вручную при необходимости.
+- Показывать ссылку на бота (`https://t.me/<bot_username>`) рядом с Telegram-настройками для быстрого перехода и запуска `/start`.
+
+
+## Iteration 9
+- Перенести интеграционные действия в раздел «Настройки → Диагностика»: MQTT check/test publish и Telegram test.
+- Добавить в Telegram-настройках явные поля `bot_token` + `chat_id` и ссылку на бота, получаемую через `getMe`.
+
+
+## Iteration 10
+- Расширить smoke-проверку runtime/UI: добавить non-fatal проверки `mqtt/check`, `mqtt/test_publish` и `telegram/bot_info`.
+- Явно фиксировать в smoke-логе, что интеграционные WARN допустимы в средах без MQTT/Telegram токена.
+
+
+## Iteration 11
+- Добавить в smoke-проверку переключаемый strict-режим для интеграций (`STRICT_INTEGRATIONS=1`).
+- Обновить release-checklist: когда использовать non-fatal и когда strict для MQTT/Telegram.
