@@ -330,6 +330,9 @@ export default function SettingsPage() {
     }
   };
 
+  const ov = settings?.rtsp_worker?.overrides || {};
+  const customProfiles = useMemo(() => Object.keys(settings?.ui?.profiles || {}), [settings]);
+
   if (!settings) {
     return <div className="card"><div className="cardBody muted">Загрузка…</div></div>;
   }
