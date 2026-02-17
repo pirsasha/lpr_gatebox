@@ -135,6 +135,9 @@ _OVERRIDABLE: dict[str, tuple[str, callable]] = {
     "SAVE_FULL_FRAME": ("bool", lambda v: bool(int(v)) if isinstance(v, (int, str)) else bool(v)),
     "SAVE_WITH_ROI": ("bool", lambda v: bool(int(v)) if isinstance(v, (int, str)) else bool(v)),
     "LOG_EVERY_SEC": ("float", float),
+
+    # ROI (scene crop)
+    "ROI_STR": ("str", str),
 }
 
 _REQUIRES_REBUILD_DETECTOR = {"DET_CONF", "DET_IOU", "DET_IMG_SIZE"}
@@ -554,9 +557,10 @@ def main() -> None:
     w = 0
     h = 0
     roi = (0, 0, 0, 0)
+    last_roi_str = str(ROI_STR or "")
     if frame0 is not None:
         h, w = frame0.shape[:2]
-        roi = parse_roi(ROI_STR, w, h)  # <- ВАЖНО: так и должно быть
+        roi = parse_roi(last_roi_str, w, h)  # <- ROI from runtime settings/env
         print(f"[rtsp_worker] first frame={w}x{h} ROI={roi}")
 
     track = TrackState(track_id=0, last_seen_ts=0.0, box=None)
@@ -673,6 +677,14 @@ def main() -> None:
                 except Exception as e:
                     print(f"[rtsp_worker] WARN: detector rebuild failed: {e}")
 
+            # ROI can be changed from settings at runtime without restart
+            cur_roi_str = str(globals().get("ROI_STR", "") or "")
+            if cur_roi_str != last_roi_str:
+                last_roi_str = cur_roi_str
+                if w > 0 and h > 0:
+                    roi = parse_roi(last_roi_str, w, h)
+                print(f"[rtsp_worker] CHG: ROI_STR -> {last_roi_str!r} ROI={roi}")
+
         # disabled -> heartbeat only
         if not current_enabled or grabber is None:
             if HB_EVERY_SEC > 0 and (now - hb_last) >= HB_EVERY_SEC:
@@ -726,7 +738,7 @@ def main() -> None:
         fh, fw = frame.shape[:2]
         if (fw, fh) != (w, h) or w == 0 or h == 0:
             w, h = fw, fh
-            roi = parse_roi(ROI_STR, w, h)
+            roi = parse_roi(last_roi_str, w, h)
             print(f"[rtsp_worker] stream size => frame={w}x{h} ROI={roi}")
 
         x1, y1, x2, y2 = roi

@@ -153,6 +153,8 @@ LIVE_DIR = Path(os.environ.get("LIVE_DIR", "/config/live"))
 LIVE_FRAME_PATH = LIVE_DIR / "frame.jpg"
 LIVE_META_PATH = LIVE_DIR / "meta.json"
 LIVE_BOXES_PATH = LIVE_DIR / "boxes.json"
+RECENT_PLATES_DIR = Path(os.environ.get("RECENT_PLATES_DIR", "/config/live/recent_plates"))
+RECENT_PLATES_INDEX = RECENT_PLATES_DIR / "index.json"
 
 
 def _read_json(path: Path, default: Dict[str, Any]) -> Dict[str, Any]:
@@ -182,6 +184,45 @@ def api_rtsp_frame_meta():
 def api_rtsp_boxes():
     """BBox от YOLO для отрисовки на UI."""
     return {"ok": True, "boxes": _read_json(LIVE_BOXES_PATH, {"ts": 0, "items": []})}
+
+
+@router.get("/recent_plates")
+def api_recent_plates():
+    """Последние распознанные номера с мини-кропами (ring buffer)."""
+    data = _read_json(RECENT_PLATES_INDEX, {"ok": True, "items": []})
+    items = data.get("items") if isinstance(data, dict) else []
+    if not isinstance(items, list):
+        items = []
+
+    safe_items = []
+    for it in items:
+        if not isinstance(it, dict):
+            continue
+        fname = str(it.get("file") or "")
+        if not fname:
+            continue
+        safe_items.append({
+            "ts": it.get("ts"),
+            "plate": it.get("plate"),
+            "conf": it.get("conf"),
+            "reason": it.get("reason"),
+            "ok": bool(it.get("ok")),
+            "file": fname,
+            "image_url": f"/api/v1/recent_plates/image/{fname}",
+        })
+
+    return {"ok": True, "items": safe_items}
+
+
+@router.get("/recent_plates/image/{filename}")
+def api_recent_plate_image(filename: str):
+    name = os.path.basename(filename)
+    if name != filename or not name.lower().endswith(".jpg"):
+        raise HTTPException(status_code=400, detail="bad filename")
+    path = RECENT_PLATES_DIR / name
+    if not path.exists() or not path.is_file():
+        raise HTTPException(status_code=404, detail="image not found")
+    return FileResponse(str(path), media_type="image/jpeg")
 
 
 # =========================
@@ -548,12 +589,13 @@ def _mask_settings_for_get(settings: Dict[str, Any]) -> Dict[str, Any]:
 
 
 def _drop_empty_mqtt_pass(patch: Dict[str, Any]) -> Dict[str, Any]:
-    """mqtt.pass == '' не должен затирать сохранённый пароль."""
+    """mqtt.pass == '' или masked '***' не должны затирать сохранённый пароль."""
     if not isinstance(patch, dict):
         return patch
     mqtt_patch = patch.get("mqtt")
     if isinstance(mqtt_patch, dict) and "pass" in mqtt_patch:
-        if str(mqtt_patch.get("pass") or "") == "":
+        val = str(mqtt_patch.get("pass") or "").strip()
+        if val in ("", "***"):
             mqtt_patch.pop("pass", None)
     return patch
 
