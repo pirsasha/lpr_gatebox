@@ -150,6 +150,21 @@ export default function SettingsPage() {
   };
 
 
+  const cloudpubErrorText = (errRaw: any) => {
+    const code = String(errRaw || "");
+    if (code === "cloudpub_disabled") {
+      return "CloudPub выключен. Включите CloudPub, сохраните и примените настройки.";
+    }
+    if (code === "cloudpub_not_configured") {
+      return "CloudPub не настроен: заполните server_ip и access_key, затем сохраните настройки.";
+    }
+    if (code === "expired") {
+      return "CloudPub-сессия истекла по auto-expire. Подключите туннель заново.";
+    }
+    return code || "неизвестная ошибка";
+  };
+
+
   const load = async () => {
     try {
       const r = await getSettings();
@@ -162,7 +177,17 @@ export default function SettingsPage() {
     }
   };
 
-  useEffect(() => { load(); fetchBotInfo(); fetchCloudpubStatus(); }, []);
+  useEffect(() => {
+    load();
+    fetchBotInfo();
+    fetchCloudpubStatus();
+
+    const t = setInterval(() => {
+      fetchCloudpubStatus();
+    }, 5000);
+
+    return () => clearInterval(t);
+  }, []);
 
   const patch = (path: string, value: any) => {
     setSettings((prev: any) => {
@@ -356,8 +381,9 @@ export default function SettingsPage() {
       const r = await cloudpubStatus();
       setCloudpubState(r || null);
       return r;
-    } catch {
+    } catch (e: any) {
       setCloudpubState(null);
+      setCloudpubMsg(`❌ CloudPub: ${cloudpubErrorText(e?.message || e)}`);
       return null;
     }
   };
@@ -371,11 +397,11 @@ export default function SettingsPage() {
         access_key: String(settings?.cloudpub?.access_key || "").trim(),
       };
       const r = await cloudpubConnect(payload);
-      if (r?.ok) setCloudpubMsg(`✅ CloudPub подключен: ${r?.target || payload.server_ip}. Проверь ссылку ниже.`);
-      else setCloudpubMsg(`❌ CloudPub: ${r?.error || "ошибка"}`);
+      if (r?.ok) setCloudpubMsg(`✅ CloudPub подключён: ${r?.target || payload.server_ip}. Проверь ссылку ниже.`);
+      else setCloudpubMsg(`❌ CloudPub: ${cloudpubErrorText(r?.error)}`);
       await fetchCloudpubStatus();
     } catch (e: any) {
-      setCloudpubMsg(`❌ CloudPub: ${e?.message || String(e)}`);
+      setCloudpubMsg(`❌ CloudPub: ${cloudpubErrorText(e?.message || e)}`);
     } finally {
       setCloudpubBusy(false);
     }
@@ -386,11 +412,11 @@ export default function SettingsPage() {
       setCloudpubBusy(true);
       setCloudpubMsg(null);
       const r = await cloudpubDisconnect();
-      if (r?.ok) setCloudpubMsg("✅ CloudPub отключён");
-      else setCloudpubMsg(`❌ CloudPub: ${r?.error || "ошибка"}`);
+      if (r?.ok) setCloudpubMsg("✅ CloudPub отключён. При необходимости нажми «Подключить / переподключить».");
+      else setCloudpubMsg(`❌ CloudPub: ${cloudpubErrorText(r?.error)}`);
       await fetchCloudpubStatus();
     } catch (e: any) {
-      setCloudpubMsg(`❌ CloudPub: ${e?.message || String(e)}`);
+      setCloudpubMsg(`❌ CloudPub: ${cloudpubErrorText(e?.message || e)}`);
     } finally {
       setCloudpubBusy(false);
     }
@@ -402,10 +428,10 @@ export default function SettingsPage() {
       setCloudpubMsg(null);
       const r = await cloudpubClearAudit();
       if (r?.ok) setCloudpubMsg("✅ История CloudPub очищена");
-      else setCloudpubMsg(`❌ CloudPub: ${r?.error || "ошибка"}`);
+      else setCloudpubMsg(`❌ CloudPub: ${cloudpubErrorText(r?.error)}`);
       await fetchCloudpubStatus();
     } catch (e: any) {
-      setCloudpubMsg(`❌ CloudPub: ${e?.message || String(e)}`);
+      setCloudpubMsg(`❌ CloudPub: ${cloudpubErrorText(e?.message || e)}`);
     } finally {
       setCloudpubBusy(false);
     }
@@ -628,7 +654,7 @@ export default function SettingsPage() {
                   ) : null}
                   {Array.isArray(cloudpubState?.audit) && cloudpubState.audit.length ? (
                     <div className="hint" style={{ marginTop: 6 }}>
-                      Последние действия: {cloudpubState.audit.slice(0, 5).map((a: any) => `${new Date(Number(a.ts || 0) * 1000).toLocaleTimeString()} ${a.action}:${a.ok ? "ok" : "fail"}`).join(" · ")}
+                      Последние действия (автообновление каждые 5 сек): {cloudpubState.audit.slice(0, 5).map((a: any) => `${new Date(Number(a.ts || 0) * 1000).toLocaleTimeString()} ${a.action}:${a.ok ? "ok" : "fail"}`).join(" · ")}
                     </div>
                   ) : null}
                   {cloudpubMsg ? <div className="hint" style={{ marginTop: 8 }}>{cloudpubMsg}</div> : null}

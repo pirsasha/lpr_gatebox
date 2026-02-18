@@ -87,3 +87,4 @@
 - После стабилизации зафиксировать «Iteration 12/13 done» в этом документе и открыть короткий hardening-спринт по производительности RTSP worker.
 - Iteration 14 phase 1: CloudPub API-контракт (status/connect/disconnect) зафиксирован в документации, добавлены нормализованные поля `connection_state` + `state_reason`, UI использует единые статусы (`online/offline/sdk_pending/disabled`).
 - Iteration 14 phase 2: добавлен операторский e2e smoke-сценарий `scripts/e2e_operator_flow.sh` и обновлён release-checklist для регулярного прогона и strict-режима.
+- Iteration 14 phase 3: CloudPub UX унифицирован (единые тексты ошибок/подсказок), добавлено автообновление статуса и audit в Settings без перезагрузки страницы.
