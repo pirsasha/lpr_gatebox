@@ -69,3 +69,11 @@
 - В UI показать состояние туннеля (online/offline, последняя ошибка, время последнего успешного подключения) и кнопку «Подключить/Переподключить».
 - Добавить политики безопасности: хранение ключа в `settings.json` в masked-виде в API-ответе, явный аудит кто/когда включал удалённый доступ, опциональный auto-expire сессии.
 - Расширить smoke-проверку: non-fatal проверка `cloudpub/status` и strict-проверка при `STRICT_INTEGRATIONS=1` для релизного gate.
+
+
+## Iteration 13
+- Telegram diagnostics hardening: `/api/v1/telegram/test` now returns synchronous delivery errors/details (instead of only queue ack).
+- Telegram poller handles `getUpdates` 409 conflict with clearer warning and longer backoff to reduce log spam.
+- CloudPub UX simplified: explicit setup steps + docs link + clearer server address field.
+
+- Iteration 13 phase 2: System UI показывает точный результат Telegram test (фото/текст/fallback) и явную подсказку по 409 getUpdates conflict.

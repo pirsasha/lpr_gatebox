@@ -314,8 +314,13 @@ export default function SettingsPage() {
       setTelegramMsg(null);
       const withPhoto = !!(settings?.telegram?.send_photo ?? true);
       const r = await apiPost("/api/v1/telegram/test", { text: "✅ GateBox: тест Telegram (из UI → Настройки)", with_photo: withPhoto });
-      if (r?.ok) setTelegramMsg("✅ Тест отправлен. Проверь Telegram.");
-      else setTelegramMsg(`❌ Telegram: ${r?.error || "ошибка"}`);
+      if (r?.ok) {
+        const w = r?.warning ? ` (${String(r.warning)})` : "";
+        setTelegramMsg(`✅ Тест отправлен. Проверь Telegram.${w}`);
+      } else {
+        const detail = r?.detail ? ` · ${String(r.detail)}` : "";
+        setTelegramMsg(`❌ Telegram: ${r?.error || "ошибка"}${detail}`);
+      }
     } catch (e: any) {
       setTelegramMsg(`❌ Telegram: ${e?.message || String(e)}`);
     } finally {
@@ -560,7 +565,7 @@ export default function SettingsPage() {
                 <div className="cardHead"><div className="cardTitle">CloudPub / удалённый доступ</div></div>
                 <div className="cardBody">
                   <ToggleRow label="Включить CloudPub" checked={!!settings?.cloudpub?.enabled} onChange={(v) => patch("cloudpub.enabled", v)} />
-                  <TextRow label="IP сервера" value={String(settings?.cloudpub?.server_ip || "")} onChange={(v) => patch("cloudpub.server_ip", v)} />
+                  <TextRow label="Адрес сервера (домен/IP)" value={String(settings?.cloudpub?.server_ip || "")} onChange={(v) => patch("cloudpub.server_ip", v)} />
                   <TextRow label="Ключ доступа" value={String(settings?.cloudpub?.access_key || "")} onChange={(v) => patch("cloudpub.access_key", v)} />
                   <SliderRow label="Auto-expire, мин" hint="0 = не отключать автоматически" value={Number(settings?.cloudpub?.auto_expire_min ?? 0)} min={0} max={1440} step={5} onChange={(v) => patch("cloudpub.auto_expire_min", v)} />
                   <div className="row" style={{ gap: 10, flexWrap: "wrap" }}>
@@ -568,6 +573,13 @@ export default function SettingsPage() {
                     <button className="btn btn-primary" type="button" onClick={onCloudpubConnect} disabled={cloudpubBusy}>Подключить / переподключить</button>
                     <button className="btn" type="button" onClick={onCloudpubDisconnect} disabled={cloudpubBusy}>Отключить</button>
                     <button className="btn" type="button" onClick={onCloudpubClearAudit} disabled={cloudpubBusy}>Очистить историю</button>
+                  </div>
+                  <div className="hint" style={{ marginTop: 8 }}>
+                    Как подключить: 1) включи CloudPub, 2) укажи адрес сервера из CloudPub-кабинета/документации, 3) вставь access key,
+                    4) Сохранить + Применить, 5) нажми «Подключить / переподключить».
+                  </div>
+                  <div className="hint" style={{ marginTop: 6 }}>
+                    Документация: <a href="https://cloudpub.ru/docs/" target="_blank" rel="noreferrer">cloudpub.ru/docs</a>
                   </div>
                   {cloudpubState ? (
                     <div className="hint" style={{ marginTop: 8 }}>

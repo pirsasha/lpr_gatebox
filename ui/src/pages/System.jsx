@@ -128,8 +128,21 @@ export default function SystemPage() {
         text: "✅ GateBox: тест Telegram (из UI → Система)",
         with_photo: withPhoto,
       });
-      if (r?.ok) setTgInfo("Отправлено ✅ Проверь Telegram-чат.");
-      else setTgErr(r?.error || "Не удалось отправить тест");
+
+      if (r?.ok) {
+        if (r?.with_photo) {
+          setTgInfo("Отправлено ✅ Фото отправлено в Telegram.");
+        } else if (r?.warning === "photo_unavailable") {
+          setTgInfo("Отправлено ✅ Ушёл только текст (фото недоступно: нет live кадра). ");
+        } else {
+          setTgInfo("Отправлено ✅ Ушёл текст в Telegram.");
+        }
+        return;
+      }
+
+      const detail = r?.detail ? ` · ${String(r.detail)}` : "";
+      const fallback = r?.queued_fallback ? " · добавлено в очередь fallback" : "";
+      setTgErr(`${r?.error || "Не удалось отправить тест"}${detail}${fallback}`);
     } catch (e) {
       setTgErr(String(e?.message || e));
     } finally {
@@ -450,6 +463,9 @@ export default function SystemPage() {
                   Ссылка на бота: <a href={tgBotLink} target="_blank" rel="noreferrer">{tgBotLink}</a>
                 </div>
               ) : null}
+              <div className="hint" style={{ marginTop: 6 }}>
+                Если в логах есть <span className="mono">409 getUpdates conflict</span>, значит этот токен используется ещё где-то (другой бот-процесс/сервер).
+              </div>
             </div>
 
             <div style={{ marginTop: 12 }}>
