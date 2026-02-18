@@ -337,9 +337,6 @@ export default function SettingsPage() {
     return <div className="card"><div className="cardBody muted">Загрузка…</div></div>;
   }
 
-  const ov = settings?.rtsp_worker?.overrides || {};
-  const customProfiles = useMemo(() => Object.keys(settings?.ui?.profiles || {}), [settings]);
-
   return (
     <div className="col">
       <div className="card">
