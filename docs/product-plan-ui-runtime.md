@@ -58,3 +58,11 @@
 ## Iteration 11
 - Добавить в smoke-проверку переключаемый strict-режим для интеграций (`STRICT_INTEGRATIONS=1`).
 - Обновить release-checklist: когда использовать non-fatal и когда strict для MQTT/Telegram.
+
+
+## Iteration 12
+- Внедрить удалённый доступ через CloudPub (https://cloudpub.ru/docs, Python SDK): добавить в «Настройки → Интеграции» поля `cloudpub.enabled`, `cloudpub.server_ip`, `cloudpub.access_key`.
+- Добавить backend-эндпоинты управления CloudPub-сессией: `connect`, `status`, `disconnect`, чтобы клиент мог включать/выключать удалённый доступ без ручных команд.
+- В UI показать состояние туннеля (online/offline, последняя ошибка, время последнего успешного подключения) и кнопку «Подключить/Переподключить».
+- Добавить политики безопасности: хранение ключа в `settings.json` в masked-виде в API-ответе, явный аудит кто/когда включал удалённый доступ, опциональный auto-expire сессии.
+- Расширить smoke-проверку: non-fatal проверка `cloudpub/status` и strict-проверка при `STRICT_INTEGRATIONS=1` для релизного gate.
