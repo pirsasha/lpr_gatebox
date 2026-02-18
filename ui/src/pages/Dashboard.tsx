@@ -36,11 +36,10 @@ export default function DashboardPage() {
   const [rtsp, setRtsp] = useState<RtspStatus | null>(null);
   const [err, setErr] = useState<string | null>(null);
   const [lastUpdate, setLastUpdate] = useState<number>(0);
-  const [showDebug, setShowDebug] = useState<boolean>(false);
   const [recent, setRecent] = useState<RecentPlateItem[]>([]);
   const [wlInfo, setWlInfo] = useState<string>("");
 
-  const { items: events, connected: sseOnline, error: sseErr } = useEventsStream({ includeDebug: showDebug, limit: 40 });
+  const { items: events, connected: sseOnline, error: sseErr } = useEventsStream({ includeDebug: false, limit: 40 });
 
   const [frameUrl, setFrameUrl] = useState<string>(rtspFrameUrl(Date.now()));
   const [frameOk, setFrameOk] = useState<boolean>(false);
@@ -152,11 +151,6 @@ export default function DashboardPage() {
                 {sseOnline ? <Badge tone="green">онлайн</Badge> : <Badge tone="red">нет связи</Badge>}
               </div>
             </div>
-
-            <label className="row" style={{ gap: 8, marginTop: 8 }}>
-              <input type="checkbox" checked={showDebug} onChange={(e) => setShowDebug(e.target.checked)} />
-              <span>Показать диагностику</span>
-            </label>
 
             <div className="frameWrap" style={{ marginTop: 8 }}>
               <img className="frameImg" src={frameUrl} alt="snapshot" onLoad={() => setFrameOk(true)} onError={() => setFrameOk(false)} />
