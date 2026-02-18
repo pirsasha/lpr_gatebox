@@ -78,3 +78,10 @@
 
 - Iteration 13 phase 2: System UI показывает точный результат Telegram test (фото/текст/fallback) и явную подсказку по 409 getUpdates conflict.
 - Iteration 13 phase 3: убран дублирующий Telegram-блок из «Система», чтобы интеграционные действия остались только в «Настройки → Диагностика»; ссылка на Telegram-канал в шапке сделана кликабельной.
+
+## Iteration 14 (next)
+- Закрыть CloudPub phase 3 до статуса implemented: выровнять поля `status`/`audit` в UI и backend и зафиксировать конечный контракт в документации API.
+- Добавить проверку CloudPub connect/disconnect в `scripts/smoke_runtime_ui.sh` как non-fatal по умолчанию и как strict при `STRICT_INTEGRATIONS=1`.
+- Доделать UX для операторов: единые тексты ошибок/подсказок в «Настройки → Интеграции» и явная индикация причины `sdk_pending`/`disabled`/`online`.
+- Закрыть gap по релизному качеству: добавить минимальный e2e smoke сценарий для потока «камера → событие → Telegram/MQTT диагностика».
+- После стабилизации зафиксировать «Iteration 12/13 done» в этом документе и открыть короткий hardening-спринт по производительности RTSP worker.
