@@ -40,7 +40,9 @@ ensure_repo() {
   if [[ -d "$dir/.git" ]]; then
     ok "Репозиторий уже есть: $dir"
     info "git pull..."
-    (cd "$dir" && git pull --ff-only) || warn "git pull не прошёл (не критично, если compose уже на месте)"
+    if ! (cd "$dir" && git pull --ff-only); then
+      die "git pull --ff-only не прошёл. Скорее всего локальная ветка расходится с origin/main или есть ручные правки. Выполни: cd $dir && git fetch --all && git reset --hard origin/main && git clean -fd"
+    fi
     return 0
   fi
   info "Клонирую репозиторий: $url"

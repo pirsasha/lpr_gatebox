@@ -67,6 +67,9 @@ class TelegramClient:
             raise RuntimeError(f"telegram api error: {js}")
         return js
 
+    def get_me(self) -> Dict[str, Any]:
+        return self._post("getMe", data={})
+
     def get_updates(self, offset: Optional[int] = None, timeout: int = 25) -> Dict[str, Any]:
         data: Dict[str, Any] = {
             "timeout": int(timeout),
