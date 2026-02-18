@@ -1,5 +1,5 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
-import { getSettings, putSettings, applySettings, mqttCheck, mqttTestPublish, apiPost, telegramBotInfo, cloudpubStatus, cloudpubConnect, cloudpubDisconnect } from "../api";
+import { getSettings, putSettings, applySettings, mqttCheck, mqttTestPublish, apiPost, telegramBotInfo, cloudpubStatus, cloudpubConnect, cloudpubDisconnect, cloudpubClearAudit } from "../api";
 
 type Settings = any;
 type SectionKey = "basic" | "advanced" | "diagnostics";
@@ -369,6 +369,21 @@ export default function SettingsPage() {
     }
   };
 
+  const onCloudpubClearAudit = async () => {
+    try {
+      setCloudpubBusy(true);
+      setCloudpubMsg(null);
+      const r = await cloudpubClearAudit();
+      if (r?.ok) setCloudpubMsg("✅ История CloudPub очищена");
+      else setCloudpubMsg(`❌ CloudPub: ${r?.error || "ошибка"}`);
+      await fetchCloudpubStatus();
+    } catch (e: any) {
+      setCloudpubMsg(`❌ CloudPub: ${e?.message || String(e)}`);
+    } finally {
+      setCloudpubBusy(false);
+    }
+  };
+
   const onApply = async () => {
     try {
       await applySettings();
@@ -552,13 +567,21 @@ export default function SettingsPage() {
                     <button className="btn btn-ghost" type="button" onClick={fetchCloudpubStatus} disabled={cloudpubBusy}>Статус</button>
                     <button className="btn btn-primary" type="button" onClick={onCloudpubConnect} disabled={cloudpubBusy}>Подключить / переподключить</button>
                     <button className="btn" type="button" onClick={onCloudpubDisconnect} disabled={cloudpubBusy}>Отключить</button>
+                    <button className="btn" type="button" onClick={onCloudpubClearAudit} disabled={cloudpubBusy}>Очистить историю</button>
                   </div>
                   {cloudpubState ? (
                     <div className="hint" style={{ marginTop: 8 }}>
                       status: {cloudpubState.connected ? "online" : "offline"}
                       {cloudpubState.server_ip ? ` · ip=${cloudpubState.server_ip}` : ""}
+                      {cloudpubState.mode ? ` · mode=${cloudpubState.mode}` : ""}
                       {cloudpubState.last_error ? ` · error=${cloudpubState.last_error}` : ""}
                       {cloudpubState.last_ok_ts ? ` · last_ok=${new Date(Number(cloudpubState.last_ok_ts) * 1000).toLocaleString()}` : ""}
+                    </div>
+                  ) : null}
+                  {cloudpubState?.simulation ? <div className="hint" style={{ marginTop: 6 }}>Сейчас работает simulation-режим. Для реального туннеля нужно подключение SDK на backend.</div> : null}
+                  {cloudpubState?.public_url ? (
+                    <div className="hint" style={{ marginTop: 6 }}>
+                      Публичная ссылка: <a href={String(cloudpubState.public_url)} target="_blank" rel="noreferrer">{String(cloudpubState.public_url)}</a>
                     </div>
                   ) : null}
                   {cloudpubState?.management_url ? (
@@ -568,7 +591,7 @@ export default function SettingsPage() {
                   ) : null}
                   {Array.isArray(cloudpubState?.audit) && cloudpubState.audit.length ? (
                     <div className="hint" style={{ marginTop: 6 }}>
-                      Последние действия: {cloudpubState.audit.slice(0, 3).map((a: any) => `${a.action}:${a.ok ? "ok" : "fail"}`).join(" · ")}
+                      Последние действия: {cloudpubState.audit.slice(0, 5).map((a: any) => `${new Date(Number(a.ts || 0) * 1000).toLocaleTimeString()} ${a.action}:${a.ok ? "ok" : "fail"}`).join(" · ")}
                     </div>
                   ) : null}
                   {cloudpubMsg ? <div className="hint" style={{ marginTop: 8 }}>{cloudpubMsg}</div> : null}

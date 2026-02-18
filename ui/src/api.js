@@ -180,3 +180,8 @@ export function cloudpubConnect(payload = {}) {
 export function cloudpubDisconnect() {
   return apiPost(`${API_V1}/cloudpub/disconnect`, {});
 }
+
+
+export function cloudpubClearAudit() {
+  return apiPost(`${API_V1}/cloudpub/audit/clear`, {});
+}

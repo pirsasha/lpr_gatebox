@@ -40,6 +40,8 @@ from app.store import EventStore, EventItem, SettingsStore
 # app.include_router(ui_router, prefix="/api/v1")
 router = APIRouter(tags=["ui"])
 
+CLOUDPUB_SIMULATION = str(os.environ.get("CLOUDPUB_SIMULATION", "1")).strip() not in ("0", "false", "False")
+
 # =========================
 # UPDATER proxy (metrics/update)
 # =========================
@@ -813,7 +815,7 @@ def _cloudpub_apply_auto_expire(cfg: Dict[str, Any]) -> None:
     if last_ok_ts <= 0:
         return
     if (time.time() - last_ok_ts) >= auto_expire_min * 60:
-        _cloudpub_state.update({"connected": False, "last_error": "expired", "target": ""})
+        _cloudpub_state.update({"connected": False, "last_error": "expired", "target": "", "public_url": ""})
         _cloudpub_append_audit("auto_expire", True, f"expired_after_min={auto_expire_min}")
 
 
@@ -823,6 +825,8 @@ def api_cloudpub_status():
     _cloudpub_apply_auto_expire(cfg)
     target = str(_cloudpub_state.get("target") or cfg.get("server_ip") or "").strip()
     management_url = f"http://{target}" if target else ""
+    public_url = str(_cloudpub_state.get("public_url") or management_url)
+    mode = "simulation" if CLOUDPUB_SIMULATION else "sdk"
     return {
         "ok": True,
         "enabled": cfg["enabled"],
@@ -833,8 +837,11 @@ def api_cloudpub_status():
         "last_error": str(_cloudpub_state.get("last_error") or ""),
         "target": str(_cloudpub_state.get("target") or ""),
         "management_url": management_url,
+        "public_url": public_url,
         "provider": "cloudpub",
-        "note": "sdk_pending",
+        "mode": mode,
+        "simulation": bool(CLOUDPUB_SIMULATION),
+        "note": "sdk_pending" if CLOUDPUB_SIMULATION else "sdk_mode",
         "audit": _cloudpub_audit[:20],
     }
 
@@ -860,16 +867,31 @@ def api_cloudpub_connect(req: CloudPubConnectIn):
         "last_error": "",
         "last_ok_ts": time.time(),
         "target": server_ip,
+        "public_url": f"http://{server_ip}",
     })
-    _cloudpub_append_audit("connect", True, "sdk_pending")
-    return {"ok": True, "connected": True, "target": server_ip, "note": "sdk_pending"}
+    _cloudpub_append_audit("connect", True, "simulation" if CLOUDPUB_SIMULATION else "sdk")
+    return {
+        "ok": True,
+        "connected": True,
+        "target": server_ip,
+        "public_url": str(_cloudpub_state.get("public_url") or ""),
+        "note": "sdk_pending" if CLOUDPUB_SIMULATION else "sdk_mode",
+        "mode": "simulation" if CLOUDPUB_SIMULATION else "sdk",
+    }
 
 
 @router.post("/cloudpub/disconnect")
 def api_cloudpub_disconnect():
-    _cloudpub_state.update({"connected": False, "last_error": "", "target": ""})
+    _cloudpub_state.update({"connected": False, "last_error": "", "target": "", "public_url": ""})
     _cloudpub_append_audit("disconnect", True, "manual")
     return {"ok": True, "connected": False}
+
+
+@router.post("/cloudpub/audit/clear")
+def api_cloudpub_audit_clear():
+    _cloudpub_audit.clear()
+    _cloudpub_append_audit("audit_clear", True, "manual")
+    return {"ok": True, "size": len(_cloudpub_audit)}
 
 
 @router.post("/rtsp/heartbeat")
