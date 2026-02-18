@@ -8,9 +8,9 @@
 - [ ] Добавить/обновить примеры ответов в документации.
 
 ## 2) Smoke/strict проверки
-- [ ] Расширить `scripts/smoke_runtime_ui.sh` проверками CloudPub (`status`, `connect`, `disconnect`).
+- [x] Расширить `scripts/smoke_runtime_ui.sh` проверками CloudPub (`status`, `connect`, `disconnect`).
 - [ ] Оставить non-fatal по умолчанию для сред без SDK/доступа.
-- [ ] В `STRICT_INTEGRATIONS=1` сделать эти проверки обязательными.
+- [x] В `STRICT_INTEGRATIONS=1` сделать эти проверки обязательными.
 
 ## 3) UX для оператора
 - [ ] Унифицировать тексты ошибок в блоке CloudPub в UI.

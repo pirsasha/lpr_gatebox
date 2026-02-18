@@ -61,7 +61,7 @@ if [[ $plates_rc -ne 0 ]]; then
   echo "[smoke] WARN: /api/v1/recent_plates not available"
 fi
 
-# 4) integration diagnostics (non-fatal): MQTT + Telegram bot info
+# 4) integration diagnostics (non-fatal): MQTT + Telegram + CloudPub
 set +e
 curl -fsS -X POST "$BASE_URL/api/v1/mqtt/check" >/dev/null
 mqtt_check_rc=$?
@@ -69,8 +69,31 @@ curl -fsS -X POST -H 'content-type: application/json' "$BASE_URL/api/v1/mqtt/tes
 mqtt_publish_rc=$?
 curl -fsS "$BASE_URL/api/v1/telegram/bot_info" >/dev/null
 tg_info_rc=$?
-curl -fsS "$BASE_URL/api/v1/cloudpub/status" >/dev/null
+
+cloudpub_status_json="$(curl -fsS "$BASE_URL/api/v1/cloudpub/status")"
 cloudpub_status_rc=$?
+cloudpub_enabled="0"
+if [[ $cloudpub_status_rc -eq 0 ]]; then
+  cloudpub_enabled="$(CLOUDPUB_STATUS_JSON="$cloudpub_status_json" python - <<'PY2'
+import json, os
+try:
+    obj = json.loads(os.environ.get("CLOUDPUB_STATUS_JSON") or "{}")
+except Exception:
+    print("0")
+else:
+    print("1" if bool(obj.get("enabled")) else "0")
+PY2
+)"
+fi
+
+cloudpub_connect_rc=0
+cloudpub_disconnect_rc=0
+if [[ $cloudpub_status_rc -eq 0 && "$cloudpub_enabled" == "1" ]]; then
+  curl -fsS -X POST -H 'content-type: application/json' "$BASE_URL/api/v1/cloudpub/connect" -d '{}' >/dev/null
+  cloudpub_connect_rc=$?
+  curl -fsS -X POST "$BASE_URL/api/v1/cloudpub/disconnect" >/dev/null
+  cloudpub_disconnect_rc=$?
+fi
 set -e
 
 if [[ $mqtt_check_rc -ne 0 ]]; then
@@ -84,11 +107,24 @@ if [[ $tg_info_rc -ne 0 ]]; then
 fi
 if [[ $cloudpub_status_rc -ne 0 ]]; then
   echo "[smoke] WARN: /api/v1/cloudpub/status failed (CloudPub may be unconfigured)"
+elif [[ "$cloudpub_enabled" != "1" ]]; then
+  echo "[smoke] WARN: CloudPub disabled in settings; connect/disconnect checks skipped"
+fi
+if [[ $cloudpub_connect_rc -ne 0 ]]; then
+  echo "[smoke] WARN: /api/v1/cloudpub/connect failed (CloudPub may be not configured)"
+fi
+if [[ $cloudpub_disconnect_rc -ne 0 ]]; then
+  echo "[smoke] WARN: /api/v1/cloudpub/disconnect failed"
 fi
 
 if [[ "$STRICT_INTEGRATIONS" == "1" ]]; then
   if [[ $mqtt_check_rc -ne 0 || $mqtt_publish_rc -ne 0 || $tg_info_rc -ne 0 || $cloudpub_status_rc -ne 0 ]]; then
     echo "[smoke] ERROR: integration checks failed in strict mode"
+    exit 1
+  fi
+
+  if [[ "$cloudpub_enabled" == "1" && $cloudpub_connect_rc -ne 0 ]] || [[ "$cloudpub_enabled" == "1" && $cloudpub_disconnect_rc -ne 0 ]]; then
+    echo "[smoke] ERROR: CloudPub connect/disconnect failed in strict mode"
     exit 1
   fi
 fi

@@ -31,4 +31,5 @@
 ## Smoke-режим для интеграций (MQTT/Telegram)
 - По умолчанию интеграционные проверки в `scripts/smoke_runtime_ui.sh` работают в non-fatal режиме (WARN).
 - Для строгой приёмки включи: `STRICT_INTEGRATIONS=1 bash scripts/smoke_runtime_ui.sh`.
-- В строгом режиме падение любого из endpoint'ов `/api/v1/mqtt/check`, `/api/v1/mqtt/test_publish`, `/api/v1/telegram/bot_info` завершит smoke с кодом 1.
+- В строгом режиме падение любого из endpoint'ов `/api/v1/mqtt/check`, `/api/v1/mqtt/test_publish`, `/api/v1/telegram/bot_info`, `/api/v1/cloudpub/status` завершит smoke с кодом 1.
+- Если `cloudpub.enabled=true`, то в строгом режиме также обязательны успешные `/api/v1/cloudpub/connect` и `/api/v1/cloudpub/disconnect`; если CloudPub выключен — эти шаги помечаются как WARN и пропускаются.
