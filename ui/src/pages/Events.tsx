@@ -10,6 +10,7 @@
 // =========================================================
 
 import React, { useMemo, useState } from "react";
+import { addWhitelistPlate } from "../api";
 import { useEventsStream } from "../hooks/useEventsStream";
 
 type Tone = "green" | "red" | "blue" | "gray" | "yellow";
@@ -83,9 +84,23 @@ function messageRu(message?: string) {
 
 export default function EventsPage() {
   const [showDebug, setShowDebug] = useState(false);
+  const [wlInfo, setWlInfo] = useState<string>("");
 
   // limit можно держать 150-300
   const { items, connected, error } = useEventsStream({ includeDebug: showDebug, limit: 150 });
+
+  async function addFromEvent(plate: string) {
+    try {
+      const r = await addWhitelistPlate(plate);
+      if (r?.ok) {
+        setWlInfo(`Добавлено в белый список: ${r.plate}`);
+        setTimeout(() => setWlInfo(""), 1400);
+      }
+    } catch (e: any) {
+      setWlInfo(`Ошибка: ${e?.message || e}`);
+      setTimeout(() => setWlInfo(""), 1800);
+    }
+  }
 
   const head = useMemo(() => {
     return (
@@ -120,6 +135,11 @@ export default function EventsPage() {
               {error}
             </div>
           )}
+          {wlInfo && (
+            <div className="alert mono" style={{ margin: 14 }}>
+              {wlInfo}
+            </div>
+          )}
 
           <table className="table">
             <thead>
@@ -129,6 +149,7 @@ export default function EventsPage() {
                 <th style={{ width: 130 }}>Статус</th>
                 <th>Сообщение</th>
                 <th style={{ width: 90, textAlign: "right" }}>Conf</th>
+                <th style={{ width: 170 }}>В белый список</th>
               </tr>
             </thead>
 
@@ -150,13 +171,22 @@ export default function EventsPage() {
                     <td className="mono" style={{ textAlign: "right" }}>
                       {typeof it.conf === "number" ? it.conf.toFixed(4) : "—"}
                     </td>
+                    <td>
+                      {it.plate ? (
+                        <button className="btn" onClick={() => addFromEvent(String(it.plate))}>
+                          + Добавить
+                        </button>
+                      ) : (
+                        <span className="muted">—</span>
+                      )}
+                    </td>
                   </tr>
                 );
               })}
 
               {!items.length && (
                 <tr>
-                  <td colSpan={5} className="muted" style={{ padding: 14 }}>
+                  <td colSpan={6} className="muted" style={{ padding: 14 }}>
                     Пока нет событий. Если камера смотрит на дорогу — события появятся сами.
                   </td>
                 </tr>

@@ -15,6 +15,8 @@ from typing import Any, Dict, Optional
 from fastapi import APIRouter
 from pydantic import BaseModel
 
+from app.integrations.telegram.client import TelegramClient
+
 router = APIRouter(prefix="/api/v1/telegram", tags=["telegram"])
 
 
@@ -35,7 +37,7 @@ def set_telegram_hooks(get_cfg, enqueue, pick_photo):
 
 @router.post("/test")
 def telegram_test(req: TgTestReq):
-    if not _TG["get_cfg"] or not _TG["enqueue"]:
+    if not _TG["get_cfg"]:
         return {"ok": False, "error": "telegram_not_initialized"}
 
     cfg = _TG["get_cfg"]()
@@ -49,9 +51,76 @@ def telegram_test(req: TgTestReq):
     if not chat_id:
         return {"ok": False, "error": "telegram_not_paired"}
 
+    token = str(tg.get("bot_token") or os.environ.get("TELEGRAM_BOT_TOKEN") or "").strip()
+    if not token:
+        return {"ok": False, "error": "no_token"}
+
     photo_path: Optional[str] = None
     if req.with_photo and _TG["pick_photo"]:
         photo_path = _TG["pick_photo"](cfg)
 
-    _TG["enqueue"](req.text, photo_path)
-    return {"ok": True, "queued": True, "with_photo": bool(photo_path)}
+    # 1) Пробуем отправить синхронно, чтобы UI сразу видел реальную ошибку.
+    try:
+        cli = TelegramClient(token=token)
+        thread_id = tg.get("thread_id")
+        if isinstance(thread_id, str) and thread_id.strip().isdigit():
+            thread_id = int(thread_id.strip())
+        if not isinstance(thread_id, int):
+            thread_id = None
+
+        if req.with_photo and photo_path:
+            js = cli.send_photo(chat_id, photo_path, caption=req.text, message_thread_id=thread_id)
+            return {"ok": True, "delivered": True, "with_photo": True, "photo_path": photo_path, "result": js.get("result") if isinstance(js, dict) else js}
+
+        js = cli.send_message(chat_id, req.text, message_thread_id=thread_id)
+        return {
+            "ok": True,
+            "delivered": True,
+            "with_photo": False,
+            "photo_path": photo_path,
+            "warning": "photo_unavailable" if req.with_photo and not photo_path else None,
+            "result": js.get("result") if isinstance(js, dict) else js,
+        }
+    except Exception as e:
+        # 2) fallback в очередь (если notifier работает), но отдаём ошибку клиенту для диагностики.
+        if _TG.get("enqueue"):
+            try:
+                _TG["enqueue"](req.text, photo_path)
+            except Exception:
+                pass
+        return {
+            "ok": False,
+            "error": "telegram_send_failed",
+            "detail": str(e),
+            "queued_fallback": bool(_TG.get("enqueue")),
+            "with_photo": bool(req.with_photo and photo_path),
+            "photo_path": photo_path,
+        }
+
+@router.get("/bot_info")
+def telegram_bot_info():
+    if not _TG["get_cfg"]:
+        return {"ok": False, "error": "telegram_not_initialized"}
+
+    cfg = _TG["get_cfg"]()
+    tg = cfg.get("telegram") if isinstance(cfg.get("telegram"), dict) else {}
+    tg = tg if isinstance(tg, dict) else {}
+
+    token = str(tg.get("bot_token") or os.environ.get("TELEGRAM_BOT_TOKEN") or "").strip()
+    if not token:
+        return {"ok": False, "error": "no_token"}
+
+    try:
+        cli = TelegramClient(token=token)
+        js = cli.get_me()
+        res = js.get("result") if isinstance(js, dict) else {}
+        username = str((res or {}).get("username") or "").strip()
+        return {
+            "ok": True,
+            "username": username or None,
+            "link": f"https://t.me/{username}" if username else None,
+            "id": (res or {}).get("id"),
+            "first_name": (res or {}).get("first_name"),
+        }
+    except Exception as e:
+        return {"ok": False, "error": "bot_info_failed", "detail": str(e)}
