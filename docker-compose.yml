@@ -53,7 +53,7 @@ services:
 
     environment:
       # ---------------- Общая информация ----------------
-      APP_VERSION: "0.3.0"
+      APP_VERSION: "0.1"
       GIT_SHA: "dev"
       BUILD_TIME: "2026-02-07T00:00:00+03:00"
 
@@ -367,8 +367,10 @@ networks:
     driver: bridge
     enable_ipv6: false
 
-  # FIX: раньше updater_net был external:true и updater сидел в ней один.
-  # Это нормально, но тогда gatebox обязан быть в этой сети тоже (см. gatebox.networks).
+  # updater_net создаётся автоматически compose,
+  # чтобы на чистой машине не падать с ошибкой:
+  # "network ... declared as external, but could not be found".
   updater_net:
     name: lpr_gatebox_updater_net
-    external: true
+    driver: bridge
+    enable_ipv6: false
