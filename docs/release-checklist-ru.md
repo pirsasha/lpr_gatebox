@@ -8,6 +8,7 @@
 - [ ] `python -m compileall app`
 - [ ] (опционально) `./scripts/smoke_runtime_ui.sh` на тестовом стенде
 - [ ] `bash scripts/e2e_operator_flow.sh` (операторский e2e: камера → события → MQTT/Telegram диагностика)
+- [ ] `BASE_URL=http://<host>:8080 bash scripts/release_gate_strict.sh` (единый strict-gate перед боем)
 
 ## 2) Runtime-проверки
 - [ ] `/health` и `/api/v1/health` отвечают `ok: true`
@@ -36,3 +37,5 @@
 - Если `cloudpub.enabled=true`, то в строгом режиме также обязательны успешные `/api/v1/cloudpub/connect` и `/api/v1/cloudpub/disconnect`; если CloudPub выключен — эти шаги помечаются как WARN и пропускаются.
 
 - Для строгой приёмки операторского сценария: `STRICT_INTEGRATIONS=1 bash scripts/e2e_operator_flow.sh`.
+
+- Рекомендуемый one-shot запуск перед боем: `BASE_URL=http://<host>:8080 bash scripts/release_gate_strict.sh`.

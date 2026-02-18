@@ -88,3 +88,4 @@
 - Iteration 14 phase 1: CloudPub API-контракт (status/connect/disconnect) зафиксирован в документации, добавлены нормализованные поля `connection_state` + `state_reason`, UI использует единые статусы (`online/offline/sdk_pending/disabled`).
 - Iteration 14 phase 2: добавлен операторский e2e smoke-сценарий `scripts/e2e_operator_flow.sh` и обновлён release-checklist для регулярного прогона и strict-режима.
 - Iteration 14 phase 3: CloudPub UX унифицирован (единые тексты ошибок/подсказок), добавлено автообновление статуса и audit в Settings без перезагрузки страницы.
+- Iteration 14 phase 4: добавлен единый strict release-gate скрипт `scripts/release_gate_strict.sh` (lint + build + compile + strict smoke + strict operator e2e).
