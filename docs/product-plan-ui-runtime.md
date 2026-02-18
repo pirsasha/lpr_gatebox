@@ -85,3 +85,4 @@
 - Доделать UX для операторов: единые тексты ошибок/подсказок в «Настройки → Интеграции» и явная индикация причины `sdk_pending`/`disabled`/`online`.
 - Закрыть gap по релизному качеству: добавить минимальный e2e smoke сценарий для потока «камера → событие → Telegram/MQTT диагностика».
 - После стабилизации зафиксировать «Iteration 12/13 done» в этом документе и открыть короткий hardening-спринт по производительности RTSP worker.
+- Iteration 14 phase 1: CloudPub API-контракт (status/connect/disconnect) зафиксирован в документации, добавлены нормализованные поля `connection_state` + `state_reason`, UI использует единые статусы (`online/offline/sdk_pending/disabled`).

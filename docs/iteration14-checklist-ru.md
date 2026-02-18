@@ -3,13 +3,13 @@
 Цель: закрыть хвосты по CloudPub и стабилизировать релизный контур интеграций.
 
 ## 1) CloudPub: contract + статус
-- [ ] Зафиксировать API-контракт для `/api/v1/cloudpub/status` (поля состояния, причины, ссылки).
-- [ ] Проверить единообразие `online/offline/sdk_pending/disabled` в UI и backend.
-- [ ] Добавить/обновить примеры ответов в документации.
+- [x] Зафиксировать API-контракт для `/api/v1/cloudpub/status` (поля состояния, причины, ссылки).
+- [x] Проверить единообразие `online/offline/sdk_pending/disabled` в UI и backend.
+- [x] Добавить/обновить примеры ответов в документации.
 
 ## 2) Smoke/strict проверки
 - [x] Расширить `scripts/smoke_runtime_ui.sh` проверками CloudPub (`status`, `connect`, `disconnect`).
-- [ ] Оставить non-fatal по умолчанию для сред без SDK/доступа.
+- [x] Оставить non-fatal по умолчанию для сред без SDK/доступа.
 - [x] В `STRICT_INTEGRATIONS=1` сделать эти проверки обязательными.
 
 ## 3) UX для оператора

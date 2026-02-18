@@ -805,6 +805,26 @@ def _cloudpub_append_audit(action: str, ok: bool, note: str = "") -> None:
     del _cloudpub_audit[100:]
 
 
+
+
+def _cloudpub_connection_state(cfg: Dict[str, Any]) -> Dict[str, str]:
+    enabled = bool(cfg.get("enabled"))
+    connected = bool(_cloudpub_state.get("connected"))
+    configured = bool(cfg.get("server_ip") and cfg.get("access_key"))
+
+    if not enabled:
+        return {"connection_state": "disabled", "state_reason": "cloudpub_disabled"}
+
+    if connected:
+        if CLOUDPUB_SIMULATION:
+            return {"connection_state": "sdk_pending", "state_reason": "simulation_mode"}
+        return {"connection_state": "online", "state_reason": "connected"}
+
+    if not configured:
+        return {"connection_state": "offline", "state_reason": "cloudpub_not_configured"}
+
+    return {"connection_state": "offline", "state_reason": "disconnected"}
+
 def _cloudpub_apply_auto_expire(cfg: Dict[str, Any]) -> None:
     if not _cloudpub_state.get("connected"):
         return
@@ -823,6 +843,7 @@ def _cloudpub_apply_auto_expire(cfg: Dict[str, Any]) -> None:
 def api_cloudpub_status():
     cfg = _cloudpub_cfg_from_settings()
     _cloudpub_apply_auto_expire(cfg)
+    state = _cloudpub_connection_state(cfg)
     target = str(_cloudpub_state.get("target") or cfg.get("server_ip") or "").strip()
     management_url = f"http://{target}" if target else ""
     public_url = str(_cloudpub_state.get("public_url") or management_url)
@@ -833,6 +854,8 @@ def api_cloudpub_status():
         "configured": bool(cfg["server_ip"] and cfg["access_key"]),
         "server_ip": cfg["server_ip"],
         "connected": bool(_cloudpub_state.get("connected")),
+        "connection_state": state["connection_state"],
+        "state_reason": state["state_reason"],
         "last_ok_ts": float(_cloudpub_state.get("last_ok_ts") or 0.0),
         "last_error": str(_cloudpub_state.get("last_error") or ""),
         "target": str(_cloudpub_state.get("target") or ""),
@@ -870,9 +893,12 @@ def api_cloudpub_connect(req: CloudPubConnectIn):
         "public_url": f"http://{server_ip}",
     })
     _cloudpub_append_audit("connect", True, "simulation" if CLOUDPUB_SIMULATION else "sdk")
+    state = _cloudpub_connection_state(cfg)
     return {
         "ok": True,
         "connected": True,
+        "connection_state": state["connection_state"],
+        "state_reason": state["state_reason"],
         "target": server_ip,
         "public_url": str(_cloudpub_state.get("public_url") or ""),
         "note": "sdk_pending" if CLOUDPUB_SIMULATION else "sdk_mode",
@@ -884,7 +910,7 @@ def api_cloudpub_connect(req: CloudPubConnectIn):
 def api_cloudpub_disconnect():
     _cloudpub_state.update({"connected": False, "last_error": "", "target": "", "public_url": ""})
     _cloudpub_append_audit("disconnect", True, "manual")
-    return {"ok": True, "connected": False}
+    return {"ok": True, "connected": False, "connection_state": "offline", "state_reason": "disconnected"}
 
 
 @router.post("/cloudpub/audit/clear")

@@ -127,6 +127,28 @@ export default function SettingsPage() {
   const [cloudpubMsg, setCloudpubMsg] = useState<string | null>(null);
   const [cloudpubState, setCloudpubState] = useState<any>(null);
 
+  const cloudpubStateLabel = (state: any) => {
+    const st = String(state?.connection_state || "").toLowerCase();
+    if (st === "online") return "online";
+    if (st === "sdk_pending") return "sdk_pending";
+    if (st === "disabled") return "disabled";
+    return "offline";
+  };
+
+  const cloudpubHintText = (state: any) => {
+    const st = String(state?.connection_state || "").toLowerCase();
+    const reason = String(state?.state_reason || "");
+
+    if (st === "disabled") return "CloudPub выключен в настройках. Включите тумблер и сохраните настройки.";
+    if (st === "sdk_pending") return "CloudPub работает в simulation-режиме. Для реального туннеля подключите SDK на backend.";
+    if (st === "online") return "Туннель активен.";
+
+    if (reason === "cloudpub_not_configured") {
+      return "CloudPub включен, но не настроен: укажите server_ip и access_key, сохраните и нажмите «Подключить / переподключить».";
+    }
+    return "Туннель не активен. Нажмите «Подключить / переподключить» после сохранения настроек.";
+  };
+
 
   const load = async () => {
     try {
@@ -583,14 +605,17 @@ export default function SettingsPage() {
                   </div>
                   {cloudpubState ? (
                     <div className="hint" style={{ marginTop: 8 }}>
-                      status: {cloudpubState.connected ? "online" : "offline"}
+                      status: {cloudpubStateLabel(cloudpubState)}
+                      {cloudpubState.state_reason ? ` · reason=${String(cloudpubState.state_reason)}` : ""}
                       {cloudpubState.server_ip ? ` · ip=${cloudpubState.server_ip}` : ""}
                       {cloudpubState.mode ? ` · mode=${cloudpubState.mode}` : ""}
                       {cloudpubState.last_error ? ` · error=${cloudpubState.last_error}` : ""}
                       {cloudpubState.last_ok_ts ? ` · last_ok=${new Date(Number(cloudpubState.last_ok_ts) * 1000).toLocaleString()}` : ""}
                     </div>
                   ) : null}
-                  {cloudpubState?.simulation ? <div className="hint" style={{ marginTop: 6 }}>Сейчас работает simulation-режим. Для реального туннеля нужно подключение SDK на backend.</div> : null}
+                  {cloudpubState ? (
+                    <div className="hint" style={{ marginTop: 6 }}>{cloudpubHintText(cloudpubState)}</div>
+                  ) : null}
                   {cloudpubState?.public_url ? (
                     <div className="hint" style={{ marginTop: 6 }}>
                       Публичная ссылка: <a href={String(cloudpubState.public_url)} target="_blank" rel="noreferrer">{String(cloudpubState.public_url)}</a>
