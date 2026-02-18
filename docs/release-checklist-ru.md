@@ -7,6 +7,7 @@
 - [ ] `npm --prefix ui run build`
 - [ ] `python -m compileall app`
 - [ ] (опционально) `./scripts/smoke_runtime_ui.sh` на тестовом стенде
+- [ ] `bash scripts/e2e_operator_flow.sh` (операторский e2e: камера → события → MQTT/Telegram диагностика)
 
 ## 2) Runtime-проверки
 - [ ] `/health` и `/api/v1/health` отвечают `ok: true`
@@ -33,3 +34,5 @@
 - Для строгой приёмки включи: `STRICT_INTEGRATIONS=1 bash scripts/smoke_runtime_ui.sh`.
 - В строгом режиме падение любого из endpoint'ов `/api/v1/mqtt/check`, `/api/v1/mqtt/test_publish`, `/api/v1/telegram/bot_info`, `/api/v1/cloudpub/status` завершит smoke с кодом 1.
 - Если `cloudpub.enabled=true`, то в строгом режиме также обязательны успешные `/api/v1/cloudpub/connect` и `/api/v1/cloudpub/disconnect`; если CloudPub выключен — эти шаги помечаются как WARN и пропускаются.
+
+- Для строгой приёмки операторского сценария: `STRICT_INTEGRATIONS=1 bash scripts/e2e_operator_flow.sh`.
