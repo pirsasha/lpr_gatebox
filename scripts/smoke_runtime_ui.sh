@@ -69,6 +69,8 @@ curl -fsS -X POST -H 'content-type: application/json' "$BASE_URL/api/v1/mqtt/tes
 mqtt_publish_rc=$?
 curl -fsS "$BASE_URL/api/v1/telegram/bot_info" >/dev/null
 tg_info_rc=$?
+curl -fsS "$BASE_URL/api/v1/cloudpub/status" >/dev/null
+cloudpub_status_rc=$?
 set -e
 
 if [[ $mqtt_check_rc -ne 0 ]]; then
@@ -80,9 +82,12 @@ fi
 if [[ $tg_info_rc -ne 0 ]]; then
   echo "[smoke] WARN: /api/v1/telegram/bot_info failed (token may be unset)"
 fi
+if [[ $cloudpub_status_rc -ne 0 ]]; then
+  echo "[smoke] WARN: /api/v1/cloudpub/status failed (CloudPub may be unconfigured)"
+fi
 
 if [[ "$STRICT_INTEGRATIONS" == "1" ]]; then
-  if [[ $mqtt_check_rc -ne 0 || $mqtt_publish_rc -ne 0 || $tg_info_rc -ne 0 ]]; then
+  if [[ $mqtt_check_rc -ne 0 || $mqtt_publish_rc -ne 0 || $tg_info_rc -ne 0 || $cloudpub_status_rc -ne 0 ]]; then
     echo "[smoke] ERROR: integration checks failed in strict mode"
     exit 1
   fi

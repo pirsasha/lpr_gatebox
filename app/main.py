@@ -216,6 +216,12 @@ DEFAULT_SETTINGS: Dict[str, Any] = {
         "rate_limit_sec": 2.0,
         "pair_code": None,       # если захочешь защиту: "1234"
     },
+    "cloudpub": {
+        "enabled": False,
+        "server_ip": "",
+        "access_key": "",
+        "auto_expire_min": 0,
+    },
 }
 
 

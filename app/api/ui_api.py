@@ -526,6 +526,7 @@ async def api_events_stream(
 _settings_store: Optional[SettingsStore] = None
 _apply_callback: Optional[Callable[[Dict[str, Any]], Dict[str, Any]]] = None
 _DEFAULT_SETTINGS: Dict[str, Any] = {}
+_cloudpub_state: Dict[str, Any] = {"connected": False, "last_error": "", "last_ok_ts": 0.0, "target": ""}
 
 
 def init_settings(path: str, defaults: Dict[str, Any]) -> None:
@@ -585,6 +586,9 @@ def _mask_settings_for_get(settings: Dict[str, Any]) -> Dict[str, Any]:
     mqtt = s.get("mqtt")
     if isinstance(mqtt, dict) and mqtt.get("pass"):
         mqtt["pass"] = "***"
+    cloudpub = s.get("cloudpub")
+    if isinstance(cloudpub, dict) and cloudpub.get("access_key"):
+        cloudpub["access_key"] = "***"
     return s
 
 
@@ -674,6 +678,20 @@ def _validate_settings_patch(patch: Dict[str, Any]) -> None:
             if "ROI_POLY_STR" in ov:
                 _validate_roi_poly_str(ov.get("ROI_POLY_STR"), "rtsp_worker.overrides.ROI_POLY_STR")
 
+
+
+def _drop_empty_cloudpub_access_key(patch: Dict[str, Any]) -> Dict[str, Any]:
+    """cloudpub.access_key == '' или masked '***' не должны затирать сохранённый ключ."""
+    if not isinstance(patch, dict):
+        return patch
+    cp_patch = patch.get("cloudpub")
+    if isinstance(cp_patch, dict) and "access_key" in cp_patch:
+        val = str(cp_patch.get("access_key") or "").strip()
+        if val in ("", "***"):
+            cp_patch.pop("access_key", None)
+    return patch
+
+
 def _drop_empty_mqtt_pass(patch: Dict[str, Any]) -> Dict[str, Any]:
     """mqtt.pass == '' или masked '***' не должны затирать сохранённый пароль."""
     if not isinstance(patch, dict):
@@ -698,6 +716,7 @@ def api_put_settings(patch: Dict[str, Any]):
     data_in = _extract_settings_payload(patch)
     data_in = _strip_nones(data_in)
     data_in = _drop_empty_mqtt_pass(data_in)
+    data_in = _drop_empty_cloudpub_access_key(data_in)
     _validate_settings_patch(data_in)
     data = st.update(data_in)
     return {"ok": True, "settings": _mask_settings_for_get(data)}
@@ -752,6 +771,69 @@ class RtspHeartbeatIn(BaseModel):
     sent: Optional[int] = None
     frame: Optional[Dict[str, int]] = None
     roi: Optional[list] = None
+
+
+
+
+class CloudPubConnectIn(BaseModel):
+    server_ip: Optional[str] = None
+    access_key: Optional[str] = None
+
+
+def _cloudpub_cfg_from_settings() -> Dict[str, Any]:
+    s = _require_store().get()
+    cfg = s.get("cloudpub") if isinstance(s.get("cloudpub"), dict) else {}
+    return {
+        "enabled": bool(cfg.get("enabled", False)),
+        "server_ip": str(cfg.get("server_ip") or "").strip(),
+        "access_key": str(cfg.get("access_key") or "").strip(),
+    }
+
+
+@router.get("/cloudpub/status")
+def api_cloudpub_status():
+    cfg = _cloudpub_cfg_from_settings()
+    return {
+        "ok": True,
+        "enabled": cfg["enabled"],
+        "configured": bool(cfg["server_ip"] and cfg["access_key"]),
+        "server_ip": cfg["server_ip"],
+        "connected": bool(_cloudpub_state.get("connected")),
+        "last_ok_ts": float(_cloudpub_state.get("last_ok_ts") or 0.0),
+        "last_error": str(_cloudpub_state.get("last_error") or ""),
+        "target": str(_cloudpub_state.get("target") or ""),
+        "provider": "cloudpub",
+        "note": "sdk_pending",
+    }
+
+
+@router.post("/cloudpub/connect")
+def api_cloudpub_connect(req: CloudPubConnectIn):
+    cfg = _cloudpub_cfg_from_settings()
+    server_ip = str(req.server_ip or cfg.get("server_ip") or "").strip()
+    access_key = str(req.access_key or cfg.get("access_key") or "").strip()
+
+    if not cfg.get("enabled"):
+        _cloudpub_state.update({"connected": False, "last_error": "cloudpub_disabled"})
+        return {"ok": False, "error": "cloudpub_disabled"}
+
+    if not server_ip or not access_key:
+        _cloudpub_state.update({"connected": False, "last_error": "cloudpub_not_configured"})
+        return {"ok": False, "error": "cloudpub_not_configured"}
+
+    _cloudpub_state.update({
+        "connected": True,
+        "last_error": "",
+        "last_ok_ts": time.time(),
+        "target": server_ip,
+    })
+    return {"ok": True, "connected": True, "target": server_ip, "note": "sdk_pending"}
+
+
+@router.post("/cloudpub/disconnect")
+def api_cloudpub_disconnect():
+    _cloudpub_state.update({"connected": False, "last_error": "", "target": ""})
+    return {"ok": True, "connected": False}
 
 
 @router.post("/rtsp/heartbeat")

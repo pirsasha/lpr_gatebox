@@ -167,3 +167,16 @@ export function mqttTestPublish(topic, payload) {
 export function telegramBotInfo() {
   return apiGet(`${API_V1}/telegram/bot_info`);
 }
+
+
+export function cloudpubStatus() {
+  return apiGet(`${API_V1}/cloudpub/status`);
+}
+
+export function cloudpubConnect(payload = {}) {
+  return apiPost(`${API_V1}/cloudpub/connect`, payload);
+}
+
+export function cloudpubDisconnect() {
+  return apiPost(`${API_V1}/cloudpub/disconnect`, {});
+}

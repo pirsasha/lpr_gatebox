@@ -1,5 +1,5 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
-import { getSettings, putSettings, applySettings, mqttCheck, mqttTestPublish, apiPost, telegramBotInfo } from "../api";
+import { getSettings, putSettings, applySettings, mqttCheck, mqttTestPublish, apiPost, telegramBotInfo, cloudpubStatus, cloudpubConnect, cloudpubDisconnect } from "../api";
 
 type Settings = any;
 type SectionKey = "basic" | "advanced" | "diagnostics";
@@ -123,6 +123,9 @@ export default function SettingsPage() {
   const [telegramBusy, setTelegramBusy] = useState(false);
   const [telegramMsg, setTelegramMsg] = useState<string | null>(null);
   const [botLink, setBotLink] = useState<string>("");
+  const [cloudpubBusy, setCloudpubBusy] = useState(false);
+  const [cloudpubMsg, setCloudpubMsg] = useState<string | null>(null);
+  const [cloudpubState, setCloudpubState] = useState<any>(null);
 
 
   const load = async () => {
@@ -137,7 +140,7 @@ export default function SettingsPage() {
     }
   };
 
-  useEffect(() => { load(); fetchBotInfo(); }, []);
+  useEffect(() => { load(); fetchBotInfo(); fetchCloudpubStatus(); }, []);
 
   const patch = (path: string, value: any) => {
     setSettings((prev: any) => {
@@ -320,6 +323,52 @@ export default function SettingsPage() {
     }
   };
 
+
+  const fetchCloudpubStatus = async () => {
+    try {
+      const r = await cloudpubStatus();
+      setCloudpubState(r || null);
+      return r;
+    } catch {
+      setCloudpubState(null);
+      return null;
+    }
+  };
+
+  const onCloudpubConnect = async () => {
+    try {
+      setCloudpubBusy(true);
+      setCloudpubMsg(null);
+      const payload = {
+        server_ip: String(settings?.cloudpub?.server_ip || "").trim(),
+        access_key: String(settings?.cloudpub?.access_key || "").trim(),
+      };
+      const r = await cloudpubConnect(payload);
+      if (r?.ok) setCloudpubMsg(`✅ CloudPub подключен: ${r?.target || payload.server_ip}`);
+      else setCloudpubMsg(`❌ CloudPub: ${r?.error || "ошибка"}`);
+      await fetchCloudpubStatus();
+    } catch (e: any) {
+      setCloudpubMsg(`❌ CloudPub: ${e?.message || String(e)}`);
+    } finally {
+      setCloudpubBusy(false);
+    }
+  };
+
+  const onCloudpubDisconnect = async () => {
+    try {
+      setCloudpubBusy(true);
+      setCloudpubMsg(null);
+      const r = await cloudpubDisconnect();
+      if (r?.ok) setCloudpubMsg("✅ CloudPub отключён");
+      else setCloudpubMsg(`❌ CloudPub: ${r?.error || "ошибка"}`);
+      await fetchCloudpubStatus();
+    } catch (e: any) {
+      setCloudpubMsg(`❌ CloudPub: ${e?.message || String(e)}`);
+    } finally {
+      setCloudpubBusy(false);
+    }
+  };
+
   const onApply = async () => {
     try {
       await applySettings();
@@ -488,6 +537,30 @@ export default function SettingsPage() {
                     <button className="btn btn-primary" type="button" onClick={onTelegramTest} disabled={telegramBusy}>Отправить тест</button>
                   </div>
                   {telegramMsg ? <div className="hint" style={{ marginTop: 8 }}>{telegramMsg}</div> : null}
+                </div>
+              </div>
+
+
+              <div className="card">
+                <div className="cardHead"><div className="cardTitle">CloudPub / удалённый доступ</div></div>
+                <div className="cardBody">
+                  <ToggleRow label="Включить CloudPub" checked={!!settings?.cloudpub?.enabled} onChange={(v) => patch("cloudpub.enabled", v)} />
+                  <TextRow label="IP сервера" value={String(settings?.cloudpub?.server_ip || "")} onChange={(v) => patch("cloudpub.server_ip", v)} />
+                  <TextRow label="Ключ доступа" value={String(settings?.cloudpub?.access_key || "")} onChange={(v) => patch("cloudpub.access_key", v)} />
+                  <SliderRow label="Auto-expire, мин" hint="0 = не отключать автоматически" value={Number(settings?.cloudpub?.auto_expire_min ?? 0)} min={0} max={1440} step={5} onChange={(v) => patch("cloudpub.auto_expire_min", v)} />
+                  <div className="row" style={{ gap: 10, flexWrap: "wrap" }}>
+                    <button className="btn btn-ghost" type="button" onClick={fetchCloudpubStatus} disabled={cloudpubBusy}>Статус</button>
+                    <button className="btn btn-primary" type="button" onClick={onCloudpubConnect} disabled={cloudpubBusy}>Подключить / переподключить</button>
+                    <button className="btn" type="button" onClick={onCloudpubDisconnect} disabled={cloudpubBusy}>Отключить</button>
+                  </div>
+                  {cloudpubState ? (
+                    <div className="hint" style={{ marginTop: 8 }}>
+                      status: {cloudpubState.connected ? "online" : "offline"}
+                      {cloudpubState.server_ip ? ` · ip=${cloudpubState.server_ip}` : ""}
+                      {cloudpubState.last_error ? ` · error=${cloudpubState.last_error}` : ""}
+                    </div>
+                  ) : null}
+                  {cloudpubMsg ? <div className="hint" style={{ marginTop: 8 }}>{cloudpubMsg}</div> : null}
                 </div>
               </div>
 
