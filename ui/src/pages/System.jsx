@@ -106,6 +106,38 @@ export default function SystemPage() {
     }
   }
 
+
+  async function onMqttCheck() {
+    try {
+      setMqttErr("");
+      setMqttInfo("");
+      setMqttBusy(true);
+      const r = await mqttCheck();
+      if (r?.ok) setMqttInfo(`MQTT доступен: ${r.host}:${r.port}`);
+      else setMqttErr(r?.error || "MQTT недоступен");
+    } catch (e) {
+      setMqttErr(String(e?.message || e));
+    } finally {
+      setMqttBusy(false);
+    }
+  }
+
+  async function onMqttTestPublish() {
+    try {
+      setMqttErr("");
+      setMqttInfo("");
+      setMqttBusy(true);
+      const topic = String(tgSettings?.mqtt?.topic || health?.mqtt?.topic || "gate/open");
+      const r = await mqttTestPublish(topic, { kind: "ui_test", source: "system_page", ts: Date.now() / 1000 });
+      if (r?.ok) setMqttInfo(`Тестовый топик отправлен: ${r.topic}`);
+      else setMqttErr(r?.error || "Не удалось отправить тестовый топик");
+    } catch (e) {
+      setMqttErr(String(e?.message || e));
+    } finally {
+      setMqttBusy(false);
+    }
+  }
+
   async function loadAll() {
     try {
       setErr("");
