@@ -62,6 +62,7 @@
 
 ## Iteration 12
 - Phase 1 implemented: базовые настройки CloudPub в UI + backend status/connect/disconnect (sdk_pending).
+- Phase 2 implemented: auto-expire сессии, `management_url` в status и audit trail последних действий connect/disconnect/expire.
 - Внедрить удалённый доступ через CloudPub (https://cloudpub.ru/docs, Python SDK): добавить в «Настройки → Интеграции» поля `cloudpub.enabled`, `cloudpub.server_ip`, `cloudpub.access_key`.
 - Добавить backend-эндпоинты управления CloudPub-сессией: `connect`, `status`, `disconnect`, чтобы клиент мог включать/выключать удалённый доступ без ручных команд.
 - В UI показать состояние туннеля (online/offline, последняя ошибка, время последнего успешного подключения) и кнопку «Подключить/Переподключить».

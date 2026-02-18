@@ -527,6 +527,7 @@ _settings_store: Optional[SettingsStore] = None
 _apply_callback: Optional[Callable[[Dict[str, Any]], Dict[str, Any]]] = None
 _DEFAULT_SETTINGS: Dict[str, Any] = {}
 _cloudpub_state: Dict[str, Any] = {"connected": False, "last_error": "", "last_ok_ts": 0.0, "target": ""}
+_cloudpub_audit: list[Dict[str, Any]] = []
 
 
 def init_settings(path: str, defaults: Dict[str, Any]) -> None:
@@ -787,12 +788,41 @@ def _cloudpub_cfg_from_settings() -> Dict[str, Any]:
         "enabled": bool(cfg.get("enabled", False)),
         "server_ip": str(cfg.get("server_ip") or "").strip(),
         "access_key": str(cfg.get("access_key") or "").strip(),
+        "auto_expire_min": max(0, int(float(cfg.get("auto_expire_min") or 0))),
     }
+
+
+def _cloudpub_append_audit(action: str, ok: bool, note: str = "") -> None:
+    _cloudpub_audit.insert(0, {
+        "ts": time.time(),
+        "action": action,
+        "ok": bool(ok),
+        "note": str(note or ""),
+        "target": str(_cloudpub_state.get("target") or ""),
+    })
+    del _cloudpub_audit[100:]
+
+
+def _cloudpub_apply_auto_expire(cfg: Dict[str, Any]) -> None:
+    if not _cloudpub_state.get("connected"):
+        return
+    auto_expire_min = int(cfg.get("auto_expire_min") or 0)
+    if auto_expire_min <= 0:
+        return
+    last_ok_ts = float(_cloudpub_state.get("last_ok_ts") or 0.0)
+    if last_ok_ts <= 0:
+        return
+    if (time.time() - last_ok_ts) >= auto_expire_min * 60:
+        _cloudpub_state.update({"connected": False, "last_error": "expired", "target": ""})
+        _cloudpub_append_audit("auto_expire", True, f"expired_after_min={auto_expire_min}")
 
 
 @router.get("/cloudpub/status")
 def api_cloudpub_status():
     cfg = _cloudpub_cfg_from_settings()
+    _cloudpub_apply_auto_expire(cfg)
+    target = str(_cloudpub_state.get("target") or cfg.get("server_ip") or "").strip()
+    management_url = f"http://{target}" if target else ""
     return {
         "ok": True,
         "enabled": cfg["enabled"],
@@ -802,8 +832,10 @@ def api_cloudpub_status():
         "last_ok_ts": float(_cloudpub_state.get("last_ok_ts") or 0.0),
         "last_error": str(_cloudpub_state.get("last_error") or ""),
         "target": str(_cloudpub_state.get("target") or ""),
+        "management_url": management_url,
         "provider": "cloudpub",
         "note": "sdk_pending",
+        "audit": _cloudpub_audit[:20],
     }
 
 
@@ -815,10 +847,12 @@ def api_cloudpub_connect(req: CloudPubConnectIn):
 
     if not cfg.get("enabled"):
         _cloudpub_state.update({"connected": False, "last_error": "cloudpub_disabled"})
+        _cloudpub_append_audit("connect", False, "cloudpub_disabled")
         return {"ok": False, "error": "cloudpub_disabled"}
 
     if not server_ip or not access_key:
         _cloudpub_state.update({"connected": False, "last_error": "cloudpub_not_configured"})
+        _cloudpub_append_audit("connect", False, "cloudpub_not_configured")
         return {"ok": False, "error": "cloudpub_not_configured"}
 
     _cloudpub_state.update({
@@ -827,12 +861,14 @@ def api_cloudpub_connect(req: CloudPubConnectIn):
         "last_ok_ts": time.time(),
         "target": server_ip,
     })
+    _cloudpub_append_audit("connect", True, "sdk_pending")
     return {"ok": True, "connected": True, "target": server_ip, "note": "sdk_pending"}
 
 
 @router.post("/cloudpub/disconnect")
 def api_cloudpub_disconnect():
     _cloudpub_state.update({"connected": False, "last_error": "", "target": ""})
+    _cloudpub_append_audit("disconnect", True, "manual")
     return {"ok": True, "connected": False}
 
 

@@ -344,7 +344,7 @@ export default function SettingsPage() {
         access_key: String(settings?.cloudpub?.access_key || "").trim(),
       };
       const r = await cloudpubConnect(payload);
-      if (r?.ok) setCloudpubMsg(`✅ CloudPub подключен: ${r?.target || payload.server_ip}`);
+      if (r?.ok) setCloudpubMsg(`✅ CloudPub подключен: ${r?.target || payload.server_ip}. Проверь ссылку ниже.`);
       else setCloudpubMsg(`❌ CloudPub: ${r?.error || "ошибка"}`);
       await fetchCloudpubStatus();
     } catch (e: any) {
@@ -558,6 +558,17 @@ export default function SettingsPage() {
                       status: {cloudpubState.connected ? "online" : "offline"}
                       {cloudpubState.server_ip ? ` · ip=${cloudpubState.server_ip}` : ""}
                       {cloudpubState.last_error ? ` · error=${cloudpubState.last_error}` : ""}
+                      {cloudpubState.last_ok_ts ? ` · last_ok=${new Date(Number(cloudpubState.last_ok_ts) * 1000).toLocaleString()}` : ""}
+                    </div>
+                  ) : null}
+                  {cloudpubState?.management_url ? (
+                    <div className="hint" style={{ marginTop: 6 }}>
+                      Ссылка управления: <a href={String(cloudpubState.management_url)} target="_blank" rel="noreferrer">{String(cloudpubState.management_url)}</a>
+                    </div>
+                  ) : null}
+                  {Array.isArray(cloudpubState?.audit) && cloudpubState.audit.length ? (
+                    <div className="hint" style={{ marginTop: 6 }}>
+                      Последние действия: {cloudpubState.audit.slice(0, 3).map((a: any) => `${a.action}:${a.ok ? "ok" : "fail"}`).join(" · ")}
                     </div>
                   ) : null}
                   {cloudpubMsg ? <div className="hint" style={{ marginTop: 8 }}>{cloudpubMsg}</div> : null}
