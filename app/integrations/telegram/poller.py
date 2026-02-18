@@ -482,5 +482,10 @@ class TelegramPoller:
                         self._handle_message(msg)
 
             except Exception as e:
+                emsg = str(e)
+                if "409" in emsg and "terminated by other getUpdates request" in emsg:
+                    self.log("[tg] WARN: getUpdates conflict (409). Этот bot token используется в другом процессе. Пауза polling 30s.")
+                    time.sleep(30.0)
+                    continue
                 self.log(f"[tg] WARN: poll failed: {type(e).__name__}: {e}")
                 time.sleep(2.0)

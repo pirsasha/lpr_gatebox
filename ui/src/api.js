@@ -27,7 +27,9 @@ async function check(r) {
   let text = "";
   try {
     text = await r.text();
-  } catch {}
+  } catch (e) {
+    console.debug("cannot read error response text", e);
+  }
   throw new Error(`${r.status} ${r.statusText}${text ? `: ${text}` : ""}`);
 }
 
@@ -130,4 +132,56 @@ export async function apiDownload(path, filename = "download.bin") {
   a.click();
   a.remove();
   URL.revokeObjectURL(a.href);
+}
+// Recent recognized plates (v1)
+export function getRecentPlates() {
+  return apiGet(`${API_V1}/recent_plates`);
+}
+
+export function recentPlateImageUrl(file) {
+  return apiUrl(`${API_V1}/recent_plates/image/${encodeURIComponent(String(file || ""))}`);
+}
+
+export async function addWhitelistPlate(plate) {
+  const p = String(plate || "").trim().toUpperCase().replace(/[\s\-_]+/g, "");
+  if (!p) return { ok: false, reason: "empty" };
+
+  const cur = await getWhitelist();
+  const list = Array.isArray(cur?.plates) ? cur.plates.map((x) => String(x).trim().toUpperCase()) : [];
+  if (!list.includes(p)) {
+    list.unshift(p);
+    await putWhitelist(Array.from(new Set(list)));
+    await reloadWhitelist();
+  }
+  return { ok: true, plate: p };
+}
+
+export function mqttCheck() {
+  return apiPost(`${API_V1}/mqtt/check`, {});
+}
+
+export function mqttTestPublish(topic, payload) {
+  return apiPost(`${API_V1}/mqtt/test_publish`, { topic, payload });
+}
+
+export function telegramBotInfo() {
+  return apiGet(`${API_V1}/telegram/bot_info`);
+}
+
+
+export function cloudpubStatus() {
+  return apiGet(`${API_V1}/cloudpub/status`);
+}
+
+export function cloudpubConnect(payload = {}) {
+  return apiPost(`${API_V1}/cloudpub/connect`, payload);
+}
+
+export function cloudpubDisconnect() {
+  return apiPost(`${API_V1}/cloudpub/disconnect`, {});
+}
+
+
+export function cloudpubClearAudit() {
+  return apiPost(`${API_V1}/cloudpub/audit/clear`, {});
 }
