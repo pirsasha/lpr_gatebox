@@ -9,7 +9,7 @@
 //        host.cpu_pct, host.mem_*_mb, host.disk_*.{used_mb,total_mb}, containers[].raw_mem
 
 import React, { useEffect, useMemo, useState } from "react";
-import { apiGet, apiPost, apiDownload, getSettings, putSettings, mqttCheck, mqttTestPublish } from "../api";
+import { apiGet, apiPost, apiDownload, mqttCheck, mqttTestPublish } from "../api";
 
 function fmtMB(x) {
   if (x == null || Number.isNaN(x)) return "—";
@@ -50,12 +50,6 @@ export default function SystemPage() {
 
   const [err, setErr] = useState("");
 
-  // Telegram (config/settings)
-  const [tgSettings, setTgSettings] = useState(null);
-  const [tgDirty, setTgDirty] = useState(false);
-  const [tgInfo, setTgInfo] = useState("");
-  const [tgErr, setTgErr] = useState("");
-  const [tgBusy, setTgBusy] = useState(false);
   const [mqttInfo, setMqttInfo] = useState("");
   const [mqttErr, setMqttErr] = useState("");
   const [mqttBusy, setMqttBusy] = useState(false);
@@ -81,72 +75,34 @@ export default function SystemPage() {
     setUpdLog(Array.isArray(l?.log) ? l.log : []);
   }
 
-  async function loadTelegramSettings() {
-    const r = await getSettings();
-    setTgSettings(r?.settings || {});
-  }
-
-  function patchTelegram(path, value) {
-    setTgSettings((prev) => {
-      const next = JSON.parse(JSON.stringify(prev || {}));
-      const parts = String(path || "").split(".");
-      let cur = next;
-      for (let i = 0; i < parts.length - 1; i++) {
-        const k = parts[i];
-        if (cur[k] == null || typeof cur[k] !== "object") cur[k] = {};
-        cur = cur[k];
-      }
-      cur[parts[parts.length - 1]] = value;
-      return next;
-    });
-    setTgDirty(true);
-  }
-
-  async function saveTelegramSettings() {
+  async function onMqttCheck() {
     try {
-      setTgErr("");
-      setTgInfo("");
-      setTgBusy(true);
-      const r = await putSettings(tgSettings || {});
-      setTgSettings(r?.settings || tgSettings);
-      setTgDirty(false);
-      setTgInfo("Сохранено ✅ Если менял токен — нажми «Обновить сейчас» (перезапустит gatebox).");
+      setMqttErr("");
+      setMqttInfo("");
+      setMqttBusy(true);
+      const r = await mqttCheck();
+      if (r?.ok) setMqttInfo(`MQTT доступен: ${r.host}:${r.port}`);
+      else setMqttErr(r?.error || "MQTT недоступен");
     } catch (e) {
-      setTgErr(String(e?.message || e));
+      setMqttErr(String(e?.message || e));
     } finally {
-      setTgBusy(false);
+      setMqttBusy(false);
     }
   }
 
-  async function telegramTest() {
+  async function onMqttTestPublish() {
     try {
-      setTgErr("");
-      setTgInfo("");
-      setTgBusy(true);
-      const withPhoto = !!(tgSettings?.telegram?.send_photo ?? true);
-      const r = await apiPost("/api/v1/telegram/test", {
-        text: "✅ GateBox: тест Telegram (из UI → Система)",
-        with_photo: withPhoto,
-      });
-
-      if (r?.ok) {
-        if (r?.with_photo) {
-          setTgInfo("Отправлено ✅ Фото отправлено в Telegram.");
-        } else if (r?.warning === "photo_unavailable") {
-          setTgInfo("Отправлено ✅ Ушёл только текст (фото недоступно: нет live кадра). ");
-        } else {
-          setTgInfo("Отправлено ✅ Ушёл текст в Telegram.");
-        }
-        return;
-      }
-
-      const detail = r?.detail ? ` · ${String(r.detail)}` : "";
-      const fallback = r?.queued_fallback ? " · добавлено в очередь fallback" : "";
-      setTgErr(`${r?.error || "Не удалось отправить тест"}${detail}${fallback}`);
+      setMqttErr("");
+      setMqttInfo("");
+      setMqttBusy(true);
+      const topic = String(health?.mqtt?.topic || "gate/open");
+      const r = await mqttTestPublish(topic, { kind: "ui_test", source: "system_page", ts: Date.now() / 1000 });
+      if (r?.ok) setMqttInfo(`Тестовый топик отправлен: ${r.topic}`);
+      else setMqttErr(r?.error || "Не удалось отправить тестовый топик");
     } catch (e) {
-      setTgErr(String(e?.message || e));
+      setMqttErr(String(e?.message || e));
     } finally {
-      setTgBusy(false);
+      setMqttBusy(false);
     }
   }
 
@@ -185,7 +141,7 @@ export default function SystemPage() {
   async function loadAll() {
     try {
       setErr("");
-      await Promise.all([loadHealth(), loadMetrics(), loadUpdaterStatus(), loadTelegramSettings()]);
+      await Promise.all([loadHealth(), loadMetrics(), loadUpdaterStatus()]);
       await loadUpdaterLog();
     } catch (e) {
       setErr(String(e?.message || e));
@@ -255,12 +211,6 @@ export default function SystemPage() {
   const updRunning = !!updStatus?.running;
   const updStep = updStatus?.step || "—";
   const updLast = updStatus?.last_result || "—";
-
-  const tgEnabled = !!tgSettings?.telegram?.enabled;
-  const tgPaired = !!tgSettings?.telegram?.chat_id;
-  const tgBotToken = String(tgSettings?.telegram?.bot_token || "");
-  const tgBotUsername = tgBotToken.includes(":") ? tgBotToken.split(":")[0] : "";
-  const tgBotLink = tgBotUsername ? `https://t.me/${tgBotUsername}` : "";
 
   return (
     <div className="col">
@@ -396,121 +346,6 @@ export default function SystemPage() {
             <div className="hint">
               «Обновить сейчас» делает <span className="mono">docker compose pull</span> +{" "}
               <span className="mono">up -d</span>. Во время обновления UI может кратко моргнуть — это нормально.
-            </div>
-          </div>
-        </div>
-      </div>
-
-      {/* TELEGRAM */}
-      <div className="card">
-        <div className="cardHead">
-          <div className="cardTitle">Telegram</div>
-          <div className="row">
-            <span className={`badge ${tgEnabled ? "badge-green" : "badge-gray"}`}>
-              {tgEnabled ? "включено" : "выключено"}
-            </span>
-            <span className={`badge ${tgPaired ? "badge-green" : "badge-red"}`}>
-              {tgPaired ? "привязан" : "не привязан"}
-            </span>
-          </div>
-        </div>
-
-        <div className="cardBody">
-          <div className="kvGrid">
-            <KeyVal k="токен бота" v={tgSettings?.telegram?.bot_token ? "••••••••••••" : "—"} mono />
-            <KeyVal k="chat_id" v={tgSettings?.telegram?.chat_id || "—"} mono />
-            <KeyVal k="фото" v={String(!!(tgSettings?.telegram?.send_photo ?? true))} mono />
-          </div>
-
-          <div className="lastBlock" style={{ marginTop: 12 }}>
-            <div className="row" style={{ gap: 10, flexWrap: "wrap" }}>
-              <label className="row" style={{ gap: 8 }}>
-                <input
-                  type="checkbox"
-                  checked={!!tgSettings?.telegram?.enabled}
-                  onChange={(e) => patchTelegram("telegram.enabled", e.target.checked)}
-                />
-                <span>Уведомления Telegram</span>
-              </label>
-
-              <label className="row" style={{ gap: 8 }}>
-                <input
-                  type="checkbox"
-                  checked={!!(tgSettings?.telegram?.send_photo ?? true)}
-                  onChange={(e) => patchTelegram("telegram.send_photo", e.target.checked)}
-                />
-                <span>Присылать фото</span>
-              </label>
-            </div>
-
-            <div style={{ marginTop: 12 }}>
-              <div className="muted" style={{ marginBottom: 6 }}>
-                Токен бота (его можно получить через <span className="mono">BotFather</span>)
-              </div>
-              <input
-                className="input"
-                type="password"
-                value={tgSettings?.telegram?.bot_token || ""}
-                placeholder="123456:ABCDEF..."
-                onChange={(e) => patchTelegram("telegram.bot_token", e.target.value)}
-              />
-              <div className="hint" style={{ marginTop: 8 }}>
-                1) Вставь токен → «Сохранить». 2) Открой бота и нажми <span className="mono">/start</span>. 3) Проверь chat_id ниже и нажми
-                «Отправить тест».
-              </div>
-              {tgBotLink ? (
-                <div className="hint" style={{ marginTop: 6 }}>
-                  Ссылка на бота: <a href={tgBotLink} target="_blank" rel="noreferrer">{tgBotLink}</a>
-                </div>
-              ) : null}
-              <div className="hint" style={{ marginTop: 6 }}>
-                Если в логах есть <span className="mono">409 getUpdates conflict</span>, значит этот токен используется ещё где-то (другой бот-процесс/сервер).
-              </div>
-            </div>
-
-            <div style={{ marginTop: 12 }}>
-              <div className="muted" style={{ marginBottom: 6 }}>
-                Chat ID (если известен; после <span className="mono">/start</span> можно оставить из авто-привязки)
-              </div>
-              <input
-                className="input mono"
-                value={tgSettings?.telegram?.chat_id == null ? "" : String(tgSettings?.telegram?.chat_id)}
-                placeholder="123456789"
-                onChange={(e) => patchTelegram("telegram.chat_id", e.target.value.trim() || null)}
-              />
-            </div>
-
-            {tgErr ? (
-              <div className="alert alert-error" style={{ marginTop: 12 }}>
-                <div style={{ fontWeight: 800, marginBottom: 6 }}>Ошибка</div>
-                <div className="mono">{tgErr}</div>
-              </div>
-            ) : null}
-            {tgInfo ? (
-              <div className="alert" style={{ marginTop: 12 }}>
-                <div style={{ fontWeight: 800, marginBottom: 6 }}>ОК</div>
-                <div>{tgInfo}</div>
-              </div>
-            ) : null}
-
-            <div className="row" style={{ marginTop: 12, gap: 10, flexWrap: "wrap" }}>
-              <button className="btn btn-primary" type="button" onClick={saveTelegramSettings} disabled={!tgDirty || tgBusy}>
-                Сохранить
-              </button>
-              <button
-                className="btn btn-ghost"
-                type="button"
-                onClick={() => patchTelegram("telegram.chat_id", null)}
-                disabled={tgBusy}
-              >
-                Сбросить привязку
-              </button>
-              <button className="btn btn-primary" type="button" onClick={telegramTest} disabled={tgBusy}>
-                Отправить тест
-              </button>
-              <button className="btn btn-ghost" type="button" onClick={loadTelegramSettings} disabled={tgBusy}>
-                Обновить
-              </button>
             </div>
           </div>
         </div>

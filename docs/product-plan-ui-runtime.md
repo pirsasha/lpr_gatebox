@@ -77,3 +77,4 @@
 - CloudPub UX simplified: explicit setup steps + docs link + clearer server address field.
 
 - Iteration 13 phase 2: System UI показывает точный результат Telegram test (фото/текст/fallback) и явную подсказку по 409 getUpdates conflict.
+- Iteration 13 phase 3: убран дублирующий Telegram-блок из «Система», чтобы интеграционные действия остались только в «Настройки → Диагностика»; ссылка на Telegram-канал в шапке сделана кликабельной.

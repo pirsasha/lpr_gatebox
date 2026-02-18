@@ -120,7 +120,15 @@ export default function App() {
         <div>
           <div className="brandTitle">LPR GateBox v0.1</div>
           <div className="brandSub">
-            Разработчик: Александр · Telegram-канал: https://t.me/+1FZ-SJ5hs8phOTNi
+            Разработчик: Александр · Telegram-канал:{" "}
+            <a
+              className="brandLink"
+              href="https://t.me/+1FZ-SJ5hs8phOTNi"
+              target="_blank"
+              rel="noreferrer"
+            >
+              @lpr_gatebox
+            </a>
           </div>
         </div>
 
