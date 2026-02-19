@@ -43,27 +43,37 @@ def env_bool(name: str, default: bool = False) -> bool:
 
 
 def parse_roi(s: str, w: int, h: int) -> Tuple[int, int, int, int]:
-    """ROI string: 'x1,y1,x2,y2' in full-frame pixels."""
+    """ROI string: 'x1,y1,x2,y2' in full-frame pixels. Empty/zero -> full frame."""
+    if w <= 0 or h <= 0:
+        return (0, 0, 0, 0)
+
     if not s:
         return (0, 0, w, h)
-    parts = [p.strip() for p in s.split(",")]
+
+    parts = [p.strip() for p in str(s).split(",")]
     if len(parts) != 4:
         return (0, 0, w, h)
+
     try:
         x1, y1, x2, y2 = [int(float(p)) for p in parts]
     except Exception:
         return (0, 0, w, h)
 
+    # treat "zero roi" as full-frame (common reset value)
+    if x1 == 0 and y1 == 0 and x2 == 0 and y2 == 0:
+        return (0, 0, w, h)
+
+    # clamp
     x1 = max(0, min(w - 1, x1))
     x2 = max(1, min(w, x2))
     y1 = max(0, min(h - 1, y1))
     y2 = max(1, min(h, y2))
-    if x2 <= x1:
-        x2 = min(w, x1 + 1)
-    if y2 <= y1:
-        y2 = min(h, y1 + 1)
-    return (x1, y1, x2, y2)
 
+    # if invalid after clamp -> full-frame (not 1x1)
+    if x2 <= x1 or y2 <= y1:
+        return (0, 0, w, h)
+
+    return (x1, y1, x2, y2)
 
 def parse_roi_poly_str(s: str, w: int, h: int) -> List[Tuple[int, int]]:
     """ROI polygon string: 'x1,y1;x2,y2;...'. Returns clipped frame points."""
