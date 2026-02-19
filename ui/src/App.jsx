@@ -1,7 +1,7 @@
 // =========================================================
 // Файл: ui/src/App.jsx
 // Проект: LPR GateBox UI
-// Версия: v0.3.x
+// Версия: v0.1
 // Обновлено: 2026-02-08
 //
 // Что тут происходит (простыми словами):
@@ -20,7 +20,7 @@ import React, { useEffect, useMemo, useState } from "react";
 import DashboardPage from "./pages/Dashboard";
 import EventsPage from "./pages/Events";
 import SettingsPage from "./pages/Settings";
-import QuickSetupPage from "./pages/QuickSetup";
+import WhitelistPage from "./pages/Whitelist";
 import SystemPage from "./pages/System";
 import HelpPage from "./pages/Help";
 
@@ -41,7 +41,8 @@ function tabFromPath(pathname) {
   const p = (pathname || "/").toLowerCase();
 
   if (p === "/help" || p.startsWith("/help/")) return "help";
-  if (p === "/setup" || p.startsWith("/setup/")) return "setup";
+  if (p === "/whitelist" || p.startsWith("/whitelist/")) return "whitelist";
+  if (p === "/setup" || p.startsWith("/setup/")) return "whitelist";
   if (p === "/camera" || p.startsWith("/camera/")) return "camera";
   if (p === "/events" || p.startsWith("/events/")) return "events";
   if (p === "/settings" || p.startsWith("/settings/")) return "settings";
@@ -60,8 +61,8 @@ function pathFromTab(tab) {
   switch (tab) {
     case "help":
       return "/help";
-    case "setup":
-      return "/setup";
+    case "whitelist":
+      return "/whitelist";
     case "camera":
       return "/camera";
     case "events":
@@ -117,9 +118,17 @@ export default function App() {
       {/* ================= TOP BAR ================= */}
       <div className="topbar">
         <div>
-          <div className="brandTitle">LPR GateBox</div>
+          <div className="brandTitle">LPR GateBox v0.1</div>
           <div className="brandSub">
-            Панель управления — всё по-русски и без лишних слов
+            Разработчик: Александр · Telegram-канал:{" "}
+            <a
+              className="brandLink"
+              href="https://t.me/+1FZ-SJ5hs8phOTNi"
+              target="_blank"
+              rel="noreferrer"
+            >
+              @lpr_gatebox
+            </a>
           </div>
         </div>
 
@@ -135,10 +144,10 @@ export default function App() {
 
           <button
             type="button"
-            className={`tab ${tab === "setup" ? "isActive" : ""}`}
-            onClick={() => go("setup")}
+            className={`tab ${tab === "whitelist" ? "isActive" : ""}`}
+            onClick={() => go("whitelist")}
           >
-            Быстрая настройка
+            Белый список
           </button>
 
           <button
@@ -186,7 +195,7 @@ export default function App() {
       {/* ================= CONTENT ================= */}
       <div className="content">
         {tab === "home" && <DashboardPage />}
-        {tab === "setup" && <QuickSetupPage />}
+        {tab === "whitelist" && <WhitelistPage />}
         {tab === "camera" && <CameraPage />}
         {tab === "events" && <EventsPage />}
         {tab === "settings" && <SettingsPage />}
