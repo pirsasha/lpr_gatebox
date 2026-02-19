@@ -39,3 +39,5 @@
 - Для строгой приёмки операторского сценария: `STRICT_INTEGRATIONS=1 bash scripts/e2e_operator_flow.sh`.
 
 - Рекомендуемый one-shot запуск перед боем: `BASE_URL=http://<host>:8080 bash scripts/release_gate_strict.sh`.
+
+- После успешного strict-gate можно одним шагом закрыть Iteration 14: `BASE_URL=http://<host>:8080 bash scripts/finalize_iteration14.sh`.

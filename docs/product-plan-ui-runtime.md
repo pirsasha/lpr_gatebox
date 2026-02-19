@@ -89,3 +89,4 @@
 - Iteration 14 phase 2: добавлен операторский e2e smoke-сценарий `scripts/e2e_operator_flow.sh` и обновлён release-checklist для регулярного прогона и strict-режима.
 - Iteration 14 phase 3: CloudPub UX унифицирован (единые тексты ошибок/подсказок), добавлено автообновление статуса и audit в Settings без перезагрузки страницы.
 - Iteration 14 phase 4: добавлен единый strict release-gate скрипт `scripts/release_gate_strict.sh` (lint + build + compile + strict smoke + strict operator e2e).
+- Iteration 14 phase 5: добавлен `scripts/finalize_iteration14.sh` для автоматического закрытия чеклиста/плана после успешного strict-gate.
