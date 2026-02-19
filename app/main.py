@@ -6,6 +6,9 @@
 # Автор: Александр
 # ---------------------------------------------------------
 # Что сделано:
+# - CHG: runtime-конфиг gatebox резолвится по правилу cfg -> env -> default.
+# - FIX: источник истины для Telegram/MQTT в рантайме — settings.json (ENV как fallback).
+# - FIX: безопасное логирование источников конфигурации без утечки секретов.
 # - FIX: /infer больше НЕ падает 400 из-за OCR/warp/orient ошибок.
 #        (раньше любые исключения внутри _ocr_try_best() превращались в HTTP 400)
 # - NEW: "soft reject" при OCR-ошибке: infer_ok=False, ok=False, reason="ocr_failed"/"empty_ocr"
@@ -60,6 +63,14 @@ from app.integrations.telegram.notifier import TelegramNotifier
 from app.integrations.telegram.poller import TelegramPoller
 from app.api.ui_api import get_settings_store
 from app.api.telegram_api import router as telegram_router, set_telegram_hooks
+from app.core.config_resolve import (
+    get_bool,
+    get_float,
+    get_int,
+    get_str,
+    get_str_src,
+    describe_secret,
+)
 
 # quad/warp (best-effort внутри gatebox)
 # ВАЖНО: это отдельный путь от твоего refiner-а в rtsp_worker.
@@ -367,89 +378,71 @@ def api_mqtt_test_publish(req: MqttTestPublishIn):
 def apply_settings(settings: Dict[str, Any]) -> Dict[str, Any]:
     """Применить настройки в рантайме. Возвращает что применили (для UI).
 
-    ВАЖНО:
-    - mqtt.pass не возвращаем в UI в открытом виде (маскируем).
-    - пустой mqtt.pass из UI не затирает сохранённый пароль.
+    CHG: единое правило приоритетов runtime-конфига:
+      settings.json (cfg) -> ENV fallback -> default.
     """
     applied: Dict[str, Any] = {}
+    cfg = settings if isinstance(settings, dict) else {}
 
-    # --- GATE ---
-    gate = settings.get("gate") if isinstance(settings.get("gate"), dict) else {}
-    if isinstance(gate, dict):
-        if "min_conf" in gate:
-            decider.min_conf = float(gate.get("min_conf"))
-        if "confirm_n" in gate:
-            decider.confirm_n = int(gate.get("confirm_n"))
-        if "confirm_window_sec" in gate:
-            decider.window_sec = float(gate.get("confirm_window_sec"))
-        if "cooldown_sec" in gate:
-            decider.cooldown_sec = float(gate.get("cooldown_sec"))
+    # --- GATE (cfg -> env -> default) ---
+    decider.min_conf = get_float(cfg, "gate.min_conf", "MIN_CONF", 0.80)
+    decider.confirm_n = get_int(cfg, "gate.confirm_n", "CONFIRM_N", 2)
+    decider.window_sec = get_float(cfg, "gate.confirm_window_sec", "CONFIRM_WINDOW_SEC", 6.0)
+    decider.cooldown_sec = get_float(cfg, "gate.cooldown_sec", "COOLDOWN_SEC", 15.0)
 
-        if "whitelist_path" in gate:
-            new_path = str(gate.get("whitelist_path") or "/config/whitelist.json")
-            if new_path != getattr(decider, "whitelist_path", ""):
-                decider.whitelist_path = new_path
-                decider.reload_whitelist()
+    new_whitelist = get_str(cfg, "gate.whitelist_path", "WHITELIST_PATH", "/config/whitelist.json")
+    if new_whitelist != getattr(decider, "whitelist_path", ""):
+        decider.whitelist_path = new_whitelist
+        decider.reload_whitelist()
 
-    # --- region_* (опционально, backward-compatible) ---
-        if "region_check" in gate and hasattr(decider, "region_check"):
-            decider.region_check = bool(gate.get("region_check"))
+    if hasattr(decider, "region_check"):
+        decider.region_check = get_bool(cfg, "gate.region_check", "REGION_CHECK", True)
+    if hasattr(decider, "region_stab"):
+        decider.region_stab = get_bool(cfg, "gate.region_stab", "REGION_STAB", True)
+    if hasattr(decider, "region_stab_window_sec"):
+        decider.region_stab_window_sec = get_float(cfg, "gate.region_stab_window_sec", "REGION_STAB_WINDOW_SEC", 2.5)
+    if hasattr(decider, "region_stab_min_hits"):
+        decider.region_stab_min_hits = get_int(cfg, "gate.region_stab_min_hits", "REGION_STAB_MIN_HITS", 3)
+    if hasattr(decider, "region_stab_min_ratio"):
+        decider.region_stab_min_ratio = get_float(cfg, "gate.region_stab_min_ratio", "REGION_STAB_MIN_RATIO", 0.60)
 
-        if "region_stab" in gate and hasattr(decider, "region_stab"):
-            decider.region_stab = bool(gate.get("region_stab"))
-        if "region_stab_window_sec" in gate and hasattr(decider, "region_stab_window_sec"):
-            decider.region_stab_window_sec = float(gate.get("region_stab_window_sec"))
-        if "region_stab_min_hits" in gate and hasattr(decider, "region_stab_min_hits"):
-            decider.region_stab_min_hits = int(gate.get("region_stab_min_hits"))
-        if "region_stab_min_ratio" in gate and hasattr(decider, "region_stab_min_ratio"):
-            decider.region_stab_min_ratio = float(gate.get("region_stab_min_ratio"))
+    applied["gate"] = {
+        "min_conf": decider.min_conf,
+        "confirm_n": decider.confirm_n,
+        "confirm_window_sec": decider.window_sec,
+        "cooldown_sec": decider.cooldown_sec,
+        "whitelist_path": decider.whitelist_path,
+        "region_check": getattr(decider, "region_check", False),
+        "region_stab": getattr(decider, "region_stab", False),
+        "region_stab_window_sec": getattr(decider, "region_stab_window_sec", 0.0),
+        "region_stab_min_hits": getattr(decider, "region_stab_min_hits", 0),
+        "region_stab_min_ratio": getattr(decider, "region_stab_min_ratio", 0.0),
+    }
 
-        applied["gate"] = {
-            "min_conf": decider.min_conf,
-            "confirm_n": decider.confirm_n,
-            "confirm_window_sec": decider.window_sec,
-            "cooldown_sec": decider.cooldown_sec,
-            "whitelist_path": decider.whitelist_path,
+    # --- MQTT (cfg -> env -> default) ---
+    new_cfg = {
+        "enabled": get_bool(cfg, "mqtt.enabled", "MQTT_ENABLED", True),
+        "host": get_str(cfg, "mqtt.host", "MQTT_HOST", "192.168.1.10"),
+        "port": get_int(cfg, "mqtt.port", "MQTT_PORT", 1883),
+        "user": get_str(cfg, "mqtt.user", "MQTT_USER", ""),
+        "pass": get_str(cfg, "mqtt.pass", "MQTT_PASS", ""),
+        "topic": get_str(cfg, "mqtt.topic", "MQTT_TOPIC", "gate/open"),
+    }
 
-            # безопасно: если атрибута нет — возвращаем дефолт
-            "region_check": getattr(decider, "region_check", False),
-            "region_stab": getattr(decider, "region_stab", False),
-            "region_stab_window_sec": getattr(decider, "region_stab_window_sec", 0.0),
-            "region_stab_min_hits": getattr(decider, "region_stab_min_hits", 0),
-            "region_stab_min_ratio": getattr(decider, "region_stab_min_ratio", 0.0),
-        }
+    changed = new_cfg != _mqtt_cfg
+    if changed:
+        _mqtt_disconnect()
+        _mqtt_cfg.update(new_cfg)
 
-    # --- MQTT ---
-    mqtt_s = settings.get("mqtt") if isinstance(settings.get("mqtt"), dict) else {}
-    if isinstance(mqtt_s, dict):
-        # CHG: пустой pass не должен затирать существующий
-        incoming_pass = mqtt_s.get("pass", None)
-        if isinstance(incoming_pass, str) and incoming_pass.strip() == "":
-            incoming_pass = None
-
-        new_cfg = {
-            "enabled": bool(mqtt_s.get("enabled", True)),
-            "host": str(mqtt_s.get("host") or ""),
-            "port": int(mqtt_s.get("port") or 1883),
-            "user": str(mqtt_s.get("user") or ""),
-            "pass": _mqtt_cfg.get("pass") if incoming_pass is None else str(incoming_pass),
-            "topic": str(mqtt_s.get("topic") or "gate/open"),
-        }
-
-        changed = new_cfg != _mqtt_cfg
-        if changed:
-            _mqtt_disconnect()
-            _mqtt_cfg.update(new_cfg)
-
-        applied["mqtt"] = {
-            "enabled": _mqtt_cfg.get("enabled"),
-            "host": _mqtt_cfg.get("host"),
-            "port": _mqtt_cfg.get("port"),
-            "user": _mqtt_cfg.get("user"),
-            "pass": "***" if (_mqtt_cfg.get("pass") or "") else "",
-            "topic": _mqtt_cfg.get("topic"),
-            "reconnected": changed,
-        }
+    applied["mqtt"] = {
+        "enabled": _mqtt_cfg.get("enabled"),
+        "host": _mqtt_cfg.get("host"),
+        "port": _mqtt_cfg.get("port"),
+        "user": _mqtt_cfg.get("user"),
+        "pass": "***" if (_mqtt_cfg.get("pass") or "") else "",
+        "topic": _mqtt_cfg.get("topic"),
+        "reconnected": changed,
+    }
 
     return applied
 
@@ -547,19 +540,15 @@ def _tg_enqueue_text(text: str, photo_path: str | None):
 # hooks для интеграции (events -> tg)
 set_telegram_hooks(_tg_get_cfg, _tg_enqueue_text, _tg_pick_photo_path)
 
-# --- token source: ENV > settings.json ---
-TELEGRAM_BOT_TOKEN_ENV = os.environ.get("TELEGRAM_BOT_TOKEN", "").strip()
+# --- token source: cfg > env > default ---
 _cfg0 = _tg_get_cfg()
-TELEGRAM_BOT_TOKEN_CFG = _tg_pick_token_from_cfg(_cfg0)
+TELEGRAM_BOT_TOKEN, TELEGRAM_BOT_TOKEN_SRC = get_str_src(_cfg0, "telegram.bot_token", "TELEGRAM_BOT_TOKEN", "")
 
-TELEGRAM_BOT_TOKEN = TELEGRAM_BOT_TOKEN_ENV or TELEGRAM_BOT_TOKEN_CFG
+_mqtt_host_dbg, _mqtt_host_src = get_str_src(_cfg0, "mqtt.host", "MQTT_HOST", ENV_MQTT_HOST)
+_tg_log(f"[cfg] mqtt.host source={_mqtt_host_src} value={_mqtt_host_dbg or '—'}")
+_tg_log(f"[cfg] telegram.token source={TELEGRAM_BOT_TOKEN_SRC} {describe_secret(TELEGRAM_BOT_TOKEN)}")
 
 if TELEGRAM_BOT_TOKEN:
-    if TELEGRAM_BOT_TOKEN_ENV:
-        _tg_log("[tg] token source: ENV (TELEGRAM_BOT_TOKEN)")
-    else:
-        _tg_log("[tg] token source: settings.json (telegram.bot_token)")
-
     try:
         tg_client = TelegramClient(TELEGRAM_BOT_TOKEN)
 
@@ -594,7 +583,7 @@ else:
     if not tg_enabled:
         _tg_log("[tg] disabled (settings.telegram.enabled is false)")
     else:
-        _tg_log("[tg] disabled (no TELEGRAM_BOT_TOKEN in env and no telegram.bot_token in settings.json)")
+        _tg_log("[tg] disabled (no telegram.bot_token in settings.json and no TELEGRAM_BOT_TOKEN in env fallback)")
 
 # =========================
 # OCR helpers
@@ -793,10 +782,10 @@ def health():
 
         # -------- MQTT --------
         "mqtt": {
-            "enabled": os.getenv("MQTT_ENABLED", "0") == "1",
-            "host": os.getenv("MQTT_HOST", ""),
-            "port": int(os.getenv("MQTT_PORT", "1883")),
-            "topic": os.getenv("MQTT_TOPIC", ""),
+            "enabled": bool(_mqtt_cfg.get("enabled")),
+            "host": str(_mqtt_cfg.get("host") or ""),
+            "port": int(_mqtt_cfg.get("port") or 1883),
+            "topic": str(_mqtt_cfg.get("topic") or ""),
         },
 
         # -------- Последний номер (best-effort) --------

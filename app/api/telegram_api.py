@@ -1,21 +1,22 @@
 # =========================================================
 # Файл: app/api/telegram_api.py
 # Проект: LPR GateBox
-# Версия: v0.3.4
-# Изменено: 2026-02-08
+# Версия: v0.3.5
+# Изменено: 2026-02-18
 # Что сделано:
+# - CHG: приоритет telegram token изменён на cfg -> env -> default через единый resolver
 # - NEW: API для теста Telegram уведомлений
 # =========================================================
 
 from __future__ import annotations
 
-import os
 from typing import Any, Dict, Optional
 
 from fastapi import APIRouter
 from pydantic import BaseModel
 
 from app.integrations.telegram.client import TelegramClient
+from app.core.config_resolve import get_str
 
 router = APIRouter(prefix="/api/v1/telegram", tags=["telegram"])
 
@@ -51,7 +52,7 @@ def telegram_test(req: TgTestReq):
     if not chat_id:
         return {"ok": False, "error": "telegram_not_paired"}
 
-    token = str(tg.get("bot_token") or os.environ.get("TELEGRAM_BOT_TOKEN") or "").strip()
+    token = get_str(cfg, "telegram.bot_token", "TELEGRAM_BOT_TOKEN", "")
     if not token:
         return {"ok": False, "error": "no_token"}
 
@@ -106,7 +107,7 @@ def telegram_bot_info():
     tg = cfg.get("telegram") if isinstance(cfg.get("telegram"), dict) else {}
     tg = tg if isinstance(tg, dict) else {}
 
-    token = str(tg.get("bot_token") or os.environ.get("TELEGRAM_BOT_TOKEN") or "").strip()
+    token = get_str(cfg, "telegram.bot_token", "TELEGRAM_BOT_TOKEN", "")
     if not token:
         return {"ok": False, "error": "no_token"}
 
