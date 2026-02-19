@@ -40,6 +40,8 @@ from app.store import EventStore, EventItem, SettingsStore
 # app.include_router(ui_router, prefix="/api/v1")
 router = APIRouter(tags=["ui"])
 
+CLOUDPUB_SIMULATION = str(os.environ.get("CLOUDPUB_SIMULATION", "1")).strip() not in ("0", "false", "False")
+
 # =========================
 # UPDATER proxy (metrics/update)
 # =========================
@@ -153,6 +155,8 @@ LIVE_DIR = Path(os.environ.get("LIVE_DIR", "/config/live"))
 LIVE_FRAME_PATH = LIVE_DIR / "frame.jpg"
 LIVE_META_PATH = LIVE_DIR / "meta.json"
 LIVE_BOXES_PATH = LIVE_DIR / "boxes.json"
+RECENT_PLATES_DIR = Path(os.environ.get("RECENT_PLATES_DIR", "/config/live/recent_plates"))
+RECENT_PLATES_INDEX = RECENT_PLATES_DIR / "index.json"
 
 
 def _read_json(path: Path, default: Dict[str, Any]) -> Dict[str, Any]:
@@ -182,6 +186,45 @@ def api_rtsp_frame_meta():
 def api_rtsp_boxes():
     """BBox от YOLO для отрисовки на UI."""
     return {"ok": True, "boxes": _read_json(LIVE_BOXES_PATH, {"ts": 0, "items": []})}
+
+
+@router.get("/recent_plates")
+def api_recent_plates():
+    """Последние распознанные номера с мини-кропами (ring buffer)."""
+    data = _read_json(RECENT_PLATES_INDEX, {"ok": True, "items": []})
+    items = data.get("items") if isinstance(data, dict) else []
+    if not isinstance(items, list):
+        items = []
+
+    safe_items = []
+    for it in items:
+        if not isinstance(it, dict):
+            continue
+        fname = str(it.get("file") or "")
+        if not fname:
+            continue
+        safe_items.append({
+            "ts": it.get("ts"),
+            "plate": it.get("plate"),
+            "conf": it.get("conf"),
+            "reason": it.get("reason"),
+            "ok": bool(it.get("ok")),
+            "file": fname,
+            "image_url": f"/api/v1/recent_plates/image/{fname}",
+        })
+
+    return {"ok": True, "items": safe_items}
+
+
+@router.get("/recent_plates/image/{filename}")
+def api_recent_plate_image(filename: str):
+    name = os.path.basename(filename)
+    if name != filename or not name.lower().endswith(".jpg"):
+        raise HTTPException(status_code=400, detail="bad filename")
+    path = RECENT_PLATES_DIR / name
+    if not path.exists() or not path.is_file():
+        raise HTTPException(status_code=404, detail="image not found")
+    return FileResponse(str(path), media_type="image/jpeg")
 
 
 # =========================
@@ -485,6 +528,8 @@ async def api_events_stream(
 _settings_store: Optional[SettingsStore] = None
 _apply_callback: Optional[Callable[[Dict[str, Any]], Dict[str, Any]]] = None
 _DEFAULT_SETTINGS: Dict[str, Any] = {}
+_cloudpub_state: Dict[str, Any] = {"connected": False, "last_error": "", "last_ok_ts": 0.0, "target": ""}
+_cloudpub_audit: list[Dict[str, Any]] = []
 
 
 def init_settings(path: str, defaults: Dict[str, Any]) -> None:
@@ -544,16 +589,120 @@ def _mask_settings_for_get(settings: Dict[str, Any]) -> Dict[str, Any]:
     mqtt = s.get("mqtt")
     if isinstance(mqtt, dict) and mqtt.get("pass"):
         mqtt["pass"] = "***"
+    cloudpub = s.get("cloudpub")
+    if isinstance(cloudpub, dict) and cloudpub.get("access_key"):
+        cloudpub["access_key"] = "***"
     return s
 
 
+
+
+def _as_float(v: Any, field: str) -> float:
+    try:
+        return float(v)
+    except Exception:
+        raise HTTPException(status_code=400, detail=f"{field}: ожидалось число")
+
+
+def _as_int(v: Any, field: str) -> int:
+    try:
+        return int(float(v))
+    except Exception:
+        raise HTTPException(status_code=400, detail=f"{field}: ожидалось целое число")
+
+
+def _check_range(v: float, field: str, min_v: float, max_v: float) -> None:
+    if v < min_v or v > max_v:
+        raise HTTPException(status_code=400, detail=f"{field}: допустимый диапазон {min_v}..{max_v}")
+
+
+def _validate_roi_poly_str(v: Any, field: str) -> None:
+    s = str(v or "").strip()
+    if not s:
+        return
+    pts = []
+    for raw in s.split(";"):
+        p = raw.strip()
+        if not p:
+            continue
+        xy = [x.strip() for x in p.split(",")]
+        if len(xy) != 2:
+            raise HTTPException(status_code=400, detail=f"{field}: формат x1,y1;x2,y2;...")
+        try:
+            x = float(xy[0]); y = float(xy[1])
+        except Exception:
+            raise HTTPException(status_code=400, detail=f"{field}: координаты должны быть числами")
+        pts.append((x, y))
+    if pts and len(pts) < 3:
+        raise HTTPException(status_code=400, detail=f"{field}: нужно минимум 3 точки")
+
+
+def _validate_settings_patch(patch: Dict[str, Any]) -> None:
+    if not isinstance(patch, dict):
+        return
+
+    gate = patch.get("gate")
+    if isinstance(gate, dict):
+        if "min_conf" in gate:
+            _check_range(_as_float(gate.get("min_conf"), "gate.min_conf"), "gate.min_conf", 0.5, 0.99)
+        if "confirm_n" in gate:
+            _check_range(float(_as_int(gate.get("confirm_n"), "gate.confirm_n")), "gate.confirm_n", 1, 10)
+        if "confirm_window_sec" in gate:
+            _check_range(_as_float(gate.get("confirm_window_sec"), "gate.confirm_window_sec"), "gate.confirm_window_sec", 0.5, 8.0)
+        if "cooldown_sec" in gate:
+            _check_range(_as_float(gate.get("cooldown_sec"), "gate.cooldown_sec"), "gate.cooldown_sec", 1.0, 120.0)
+        if "region_stab_window_sec" in gate:
+            _check_range(_as_float(gate.get("region_stab_window_sec"), "gate.region_stab_window_sec"), "gate.region_stab_window_sec", 0.5, 8.0)
+        if "region_stab_min_hits" in gate:
+            _check_range(float(_as_int(gate.get("region_stab_min_hits"), "gate.region_stab_min_hits")), "gate.region_stab_min_hits", 1, 10)
+        if "region_stab_min_ratio" in gate:
+            _check_range(_as_float(gate.get("region_stab_min_ratio"), "gate.region_stab_min_ratio"), "gate.region_stab_min_ratio", 0.3, 1.0)
+
+    rt = patch.get("rtsp_worker")
+    if isinstance(rt, dict):
+        ov = rt.get("overrides")
+        if isinstance(ov, dict):
+            if "READ_FPS" in ov:
+                _check_range(_as_float(ov.get("READ_FPS"), "rtsp_worker.overrides.READ_FPS"), "rtsp_worker.overrides.READ_FPS", 1.0, 30.0)
+            if "DET_FPS" in ov:
+                _check_range(_as_float(ov.get("DET_FPS"), "rtsp_worker.overrides.DET_FPS"), "rtsp_worker.overrides.DET_FPS", 0.5, 15.0)
+            if "SEND_FPS" in ov:
+                _check_range(_as_float(ov.get("SEND_FPS"), "rtsp_worker.overrides.SEND_FPS"), "rtsp_worker.overrides.SEND_FPS", 0.5, 15.0)
+            if "DET_CONF" in ov:
+                _check_range(_as_float(ov.get("DET_CONF"), "rtsp_worker.overrides.DET_CONF"), "rtsp_worker.overrides.DET_CONF", 0.05, 0.95)
+            if "DET_IOU" in ov:
+                _check_range(_as_float(ov.get("DET_IOU"), "rtsp_worker.overrides.DET_IOU"), "rtsp_worker.overrides.DET_IOU", 0.1, 0.9)
+            if "JPEG_QUALITY" in ov:
+                _check_range(float(_as_int(ov.get("JPEG_QUALITY"), "rtsp_worker.overrides.JPEG_QUALITY")), "rtsp_worker.overrides.JPEG_QUALITY", 60, 100)
+            if "LOG_EVERY_SEC" in ov:
+                _check_range(_as_float(ov.get("LOG_EVERY_SEC"), "rtsp_worker.overrides.LOG_EVERY_SEC"), "rtsp_worker.overrides.LOG_EVERY_SEC", 0.0, 120.0)
+            if "SAVE_EVERY" in ov:
+                _check_range(float(_as_int(ov.get("SAVE_EVERY"), "rtsp_worker.overrides.SAVE_EVERY")), "rtsp_worker.overrides.SAVE_EVERY", 0, 300)
+            if "ROI_POLY_STR" in ov:
+                _validate_roi_poly_str(ov.get("ROI_POLY_STR"), "rtsp_worker.overrides.ROI_POLY_STR")
+
+
+
+def _drop_empty_cloudpub_access_key(patch: Dict[str, Any]) -> Dict[str, Any]:
+    """cloudpub.access_key == '' или masked '***' не должны затирать сохранённый ключ."""
+    if not isinstance(patch, dict):
+        return patch
+    cp_patch = patch.get("cloudpub")
+    if isinstance(cp_patch, dict) and "access_key" in cp_patch:
+        val = str(cp_patch.get("access_key") or "").strip()
+        if val in ("", "***"):
+            cp_patch.pop("access_key", None)
+    return patch
+
+
 def _drop_empty_mqtt_pass(patch: Dict[str, Any]) -> Dict[str, Any]:
-    """mqtt.pass == '' не должен затирать сохранённый пароль."""
+    """mqtt.pass == '' или masked '***' не должны затирать сохранённый пароль."""
     if not isinstance(patch, dict):
         return patch
     mqtt_patch = patch.get("mqtt")
     if isinstance(mqtt_patch, dict) and "pass" in mqtt_patch:
-        if str(mqtt_patch.get("pass") or "") == "":
+        val = str(mqtt_patch.get("pass") or "").strip()
+        if val in ("", "***"):
             mqtt_patch.pop("pass", None)
     return patch
 
@@ -570,6 +719,8 @@ def api_put_settings(patch: Dict[str, Any]):
     data_in = _extract_settings_payload(patch)
     data_in = _strip_nones(data_in)
     data_in = _drop_empty_mqtt_pass(data_in)
+    data_in = _drop_empty_cloudpub_access_key(data_in)
+    _validate_settings_patch(data_in)
     data = st.update(data_in)
     return {"ok": True, "settings": _mask_settings_for_get(data)}
 
@@ -623,6 +774,150 @@ class RtspHeartbeatIn(BaseModel):
     sent: Optional[int] = None
     frame: Optional[Dict[str, int]] = None
     roi: Optional[list] = None
+
+
+
+
+class CloudPubConnectIn(BaseModel):
+    server_ip: Optional[str] = None
+    access_key: Optional[str] = None
+
+
+def _cloudpub_cfg_from_settings() -> Dict[str, Any]:
+    s = _require_store().get()
+    cfg = s.get("cloudpub") if isinstance(s.get("cloudpub"), dict) else {}
+    return {
+        "enabled": bool(cfg.get("enabled", False)),
+        "server_ip": str(cfg.get("server_ip") or "").strip(),
+        "access_key": str(cfg.get("access_key") or "").strip(),
+        "auto_expire_min": max(0, int(float(cfg.get("auto_expire_min") or 0))),
+    }
+
+
+def _cloudpub_append_audit(action: str, ok: bool, note: str = "") -> None:
+    _cloudpub_audit.insert(0, {
+        "ts": time.time(),
+        "action": action,
+        "ok": bool(ok),
+        "note": str(note or ""),
+        "target": str(_cloudpub_state.get("target") or ""),
+    })
+    del _cloudpub_audit[100:]
+
+
+
+
+def _cloudpub_connection_state(cfg: Dict[str, Any]) -> Dict[str, str]:
+    enabled = bool(cfg.get("enabled"))
+    connected = bool(_cloudpub_state.get("connected"))
+    configured = bool(cfg.get("server_ip") and cfg.get("access_key"))
+
+    if not enabled:
+        return {"connection_state": "disabled", "state_reason": "cloudpub_disabled"}
+
+    if connected:
+        if CLOUDPUB_SIMULATION:
+            return {"connection_state": "sdk_pending", "state_reason": "simulation_mode"}
+        return {"connection_state": "online", "state_reason": "connected"}
+
+    if not configured:
+        return {"connection_state": "offline", "state_reason": "cloudpub_not_configured"}
+
+    return {"connection_state": "offline", "state_reason": "disconnected"}
+
+def _cloudpub_apply_auto_expire(cfg: Dict[str, Any]) -> None:
+    if not _cloudpub_state.get("connected"):
+        return
+    auto_expire_min = int(cfg.get("auto_expire_min") or 0)
+    if auto_expire_min <= 0:
+        return
+    last_ok_ts = float(_cloudpub_state.get("last_ok_ts") or 0.0)
+    if last_ok_ts <= 0:
+        return
+    if (time.time() - last_ok_ts) >= auto_expire_min * 60:
+        _cloudpub_state.update({"connected": False, "last_error": "expired", "target": "", "public_url": ""})
+        _cloudpub_append_audit("auto_expire", True, f"expired_after_min={auto_expire_min}")
+
+
+@router.get("/cloudpub/status")
+def api_cloudpub_status():
+    cfg = _cloudpub_cfg_from_settings()
+    _cloudpub_apply_auto_expire(cfg)
+    state = _cloudpub_connection_state(cfg)
+    target = str(_cloudpub_state.get("target") or cfg.get("server_ip") or "").strip()
+    management_url = f"http://{target}" if target else ""
+    public_url = str(_cloudpub_state.get("public_url") or management_url)
+    mode = "simulation" if CLOUDPUB_SIMULATION else "sdk"
+    return {
+        "ok": True,
+        "enabled": cfg["enabled"],
+        "configured": bool(cfg["server_ip"] and cfg["access_key"]),
+        "server_ip": cfg["server_ip"],
+        "connected": bool(_cloudpub_state.get("connected")),
+        "connection_state": state["connection_state"],
+        "state_reason": state["state_reason"],
+        "last_ok_ts": float(_cloudpub_state.get("last_ok_ts") or 0.0),
+        "last_error": str(_cloudpub_state.get("last_error") or ""),
+        "target": str(_cloudpub_state.get("target") or ""),
+        "management_url": management_url,
+        "public_url": public_url,
+        "provider": "cloudpub",
+        "mode": mode,
+        "simulation": bool(CLOUDPUB_SIMULATION),
+        "note": "sdk_pending" if CLOUDPUB_SIMULATION else "sdk_mode",
+        "audit": _cloudpub_audit[:20],
+    }
+
+
+@router.post("/cloudpub/connect")
+def api_cloudpub_connect(req: CloudPubConnectIn):
+    cfg = _cloudpub_cfg_from_settings()
+    server_ip = str(req.server_ip or cfg.get("server_ip") or "").strip()
+    access_key = str(req.access_key or cfg.get("access_key") or "").strip()
+
+    if not cfg.get("enabled"):
+        _cloudpub_state.update({"connected": False, "last_error": "cloudpub_disabled"})
+        _cloudpub_append_audit("connect", False, "cloudpub_disabled")
+        return {"ok": False, "error": "cloudpub_disabled"}
+
+    if not server_ip or not access_key:
+        _cloudpub_state.update({"connected": False, "last_error": "cloudpub_not_configured"})
+        _cloudpub_append_audit("connect", False, "cloudpub_not_configured")
+        return {"ok": False, "error": "cloudpub_not_configured"}
+
+    _cloudpub_state.update({
+        "connected": True,
+        "last_error": "",
+        "last_ok_ts": time.time(),
+        "target": server_ip,
+        "public_url": f"http://{server_ip}",
+    })
+    _cloudpub_append_audit("connect", True, "simulation" if CLOUDPUB_SIMULATION else "sdk")
+    state = _cloudpub_connection_state(cfg)
+    return {
+        "ok": True,
+        "connected": True,
+        "connection_state": state["connection_state"],
+        "state_reason": state["state_reason"],
+        "target": server_ip,
+        "public_url": str(_cloudpub_state.get("public_url") or ""),
+        "note": "sdk_pending" if CLOUDPUB_SIMULATION else "sdk_mode",
+        "mode": "simulation" if CLOUDPUB_SIMULATION else "sdk",
+    }
+
+
+@router.post("/cloudpub/disconnect")
+def api_cloudpub_disconnect():
+    _cloudpub_state.update({"connected": False, "last_error": "", "target": "", "public_url": ""})
+    _cloudpub_append_audit("disconnect", True, "manual")
+    return {"ok": True, "connected": False, "connection_state": "offline", "state_reason": "disconnected"}
+
+
+@router.post("/cloudpub/audit/clear")
+def api_cloudpub_audit_clear():
+    _cloudpub_audit.clear()
+    _cloudpub_append_audit("audit_clear", True, "manual")
+    return {"ok": True, "size": len(_cloudpub_audit)}
 
 
 @router.post("/rtsp/heartbeat")

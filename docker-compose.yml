@@ -53,7 +53,7 @@ services:
 
     environment:
       # ---------------- Общая информация ----------------
-      APP_VERSION: "0.3.0"
+      APP_VERSION: "0.1"
       GIT_SHA: "dev"
       BUILD_TIME: "2026-02-07T00:00:00+03:00"
 
@@ -98,8 +98,8 @@ services:
       MQTT_ENABLED: "1"
       MQTT_HOST: "192.168.2.102"
       MQTT_PORT: "1883"
-      MQTT_USER: "pirsasha"
-      MQTT_PASS: "Ps!628227!"
+      MQTT_USER: "${MQTT_USER:-}"
+      MQTT_PASS: "${MQTT_PASS:-}"
       MQTT_TOPIC: "gate/open"
       UI_EVENTS_ONLY_RU: "1"
       UI_EVENTS_RU_STRICT: "0"          # мягко: пропускает А898АА78 тоже
@@ -108,7 +108,7 @@ services:
       UI_I18N_RU: "1"                   # русские статусы/сообщения
 
       # ---------------- Telegram ----------------
-      TELEGRAM_BOT_TOKEN: "8580546225:AAH2_pLVlzXM0YgLd8Dfg9GkzOid_Txg348"
+      TELEGRAM_BOT_TOKEN: "${TELEGRAM_BOT_TOKEN:-}"
 
       # FIX: раньше UPDATER_URL был пустой. Лучше всегда задавать явно.
       # Важно: работает только если gatebox и updater в общей сети (см. networks выше).
@@ -367,8 +367,10 @@ networks:
     driver: bridge
     enable_ipv6: false
 
-  # FIX: раньше updater_net был external:true и updater сидел в ней один.
-  # Это нормально, но тогда gatebox обязан быть в этой сети тоже (см. gatebox.networks).
+  # updater_net создаётся автоматически compose,
+  # чтобы на чистой машине не падать с ошибкой:
+  # "network ... declared as external, but could not be found".
   updater_net:
     name: lpr_gatebox_updater_net
-    external: true
+    driver: bridge
+    enable_ipv6: false

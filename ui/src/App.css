@@ -77,6 +77,13 @@ body{
   font-size: 13px;
 }
 
+.brandLink{
+  color: #9fc3ff;
+  text-decoration: none;
+  font-weight: 700;
+}
+.brandLink:hover{ text-decoration: underline; }
+
 .tabs{
   display:flex;
   gap: 8px;

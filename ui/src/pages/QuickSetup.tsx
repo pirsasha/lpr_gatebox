@@ -2,7 +2,7 @@
 // Мастер "Быстрая настройка" — простыми словами
 
 import React, { useEffect, useMemo, useRef, useState } from "react";
-import { getRtspStatus, rtspFrameUrl, rtspBoxes, getWhitelist, putWhitelist, reloadWhitelist } from "../api";
+import { getRtspStatus, rtspFrameUrl, rtspBoxes, getWhitelist, putWhitelist, reloadWhitelist, putSettings } from "../api";
 import { useEventsStream } from "../hooks/useEventsStream";
 
 type Roi = { x: number; y: number; w: number; h: number };
@@ -31,6 +31,7 @@ export default function QuickSetupPage() {
   });
   const [drawing, setDrawing] = useState(false);
   const dragStart = useRef<{ x: number; y: number } | null>(null);
+  const frameWrapRef = useRef<HTMLDivElement | null>(null);
 
   // Whitelist
   const [plates, setPlates] = useState<string[]>([]);
@@ -134,14 +135,41 @@ export default function QuickSetupPage() {
     dragStart.current = null;
   }
 
-  function saveRoi() {
+  async function saveRoi() {
     if (!roi) return;
+
     try {
       localStorage.setItem("lpr_gatebox_roi", JSON.stringify(roi));
-      setWlInfo("Зона сохранена ✅");
-      setTimeout(() => setWlInfo(null), 1500);
-    } catch {
-      /* ignore */
+    } catch (e) {
+      console.warn("cannot save ROI to localStorage", e);
+    }
+
+    const wrap = frameWrapRef.current;
+    const fw = Number(boxes?.w || 0);
+    const fh = Number(boxes?.h || 0);
+
+    if (!wrap || fw <= 0 || fh <= 0) {
+      setWlErr("Не удалось сохранить ROI в систему: нет размеров кадра");
+      return;
+    }
+
+    const rw = wrap.clientWidth || 1;
+    const rh = wrap.clientHeight || 1;
+
+    const x1 = Math.max(0, Math.min(fw - 1, Math.round((roi.x / rw) * fw)));
+    const y1 = Math.max(0, Math.min(fh - 1, Math.round((roi.y / rh) * fh)));
+    const x2 = Math.max(x1 + 1, Math.min(fw, Math.round(((roi.x + roi.w) / rw) * fw)));
+    const y2 = Math.max(y1 + 1, Math.min(fh, Math.round(((roi.y + roi.h) / rh) * fh)));
+
+    const roiStr = `${x1},${y1},${x2},${y2}`;
+
+    try {
+      await putSettings({ rtsp_worker: { overrides: { ROI_STR: roiStr } } });
+      setWlErr(null);
+      setWlInfo(`Зона сохранена в систему ✅ (${roiStr})`);
+      setTimeout(() => setWlInfo(null), 1800);
+    } catch (e: any) {
+      setWlErr(`Ошибка сохранения ROI: ${e?.message || e}`);
     }
   }
 
@@ -250,7 +278,7 @@ export default function QuickSetupPage() {
               </div>
 
               <div className="hint" style={{ marginTop: 12 }}>
-                Сейчас зона сохраняется в браузере (чтобы не сбивалось). В следующем обновлении привяжем её к камере.
+                Зона сохраняется в settings.json и применяется rtsp_worker на лету (без перезапуска).
               </div>
 
               <div className="row" style={{ gap: 10, marginTop: 12 }}>
@@ -270,7 +298,7 @@ export default function QuickSetupPage() {
             <div className="cardBody">
               <div className="cardTitle">Выбор зоны</div>
 
-              <div className="frameWrap" onMouseDown={onDown} onMouseMove={onMove} onMouseUp={onUp} onMouseLeave={onUp}>
+              <div ref={frameWrapRef} className="frameWrap" onMouseDown={onDown} onMouseMove={onMove} onMouseUp={onUp} onMouseLeave={onUp}>
                 <img className="frameImg" src={frameUrl} alt="frame" />
                 {roi && (
                   <div
