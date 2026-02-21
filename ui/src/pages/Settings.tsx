@@ -48,11 +48,29 @@ function ToggleRow({ label, hint, checked, onChange }: ToggleProps) {
   );
 }
 
-function TextRow({ label, value, onChange }: { label: string; value: string; onChange: (v: string) => void }) {
+function TextRow({
+  label,
+  value,
+  onChange,
+  type,
+  placeholder,
+}: {
+  label: string;
+  value: string;
+  onChange: (v: string) => void;
+  type?: string;
+  placeholder?: string;
+}) {
   return (
     <div className="row" style={{ marginBottom: 10 }}>
       <label className="muted" style={{ width: 180 }}>{label}</label>
-      <input className="input mono" value={value} onChange={(e) => onChange(e.target.value)} />
+      <input
+        className="input mono"
+        type={type || "text"}
+        value={value}
+        placeholder={placeholder || ""}
+        onChange={(e) => onChange(e.target.value)}
+      />
     </div>
   );
 }
@@ -140,11 +158,11 @@ export default function SettingsPage() {
     const reason = String(state?.state_reason || "");
 
     if (st === "disabled") return "CloudPub выключен в настройках. Включите тумблер и сохраните настройки.";
-    if (st === "sdk_pending") return "CloudPub работает в simulation-режиме. Для реального туннеля подключите SDK на backend.";
+    if (st === "sdk_pending") return "CloudPub работает в simulation-режиме. Для реального туннеля отключите simulation и установите cloudpub-python-sdk на backend.";
     if (st === "online") return "Туннель активен.";
 
     if (reason === "cloudpub_not_configured") {
-      return "CloudPub включен, но не настроен: укажите server_ip и access_key, сохраните и нажмите «Подключить / переподключить».";
+      return "CloudPub включен, но не настроен: укажите email+password (рекомендуется) или token (access_key), сохраните и нажмите «Подключить / переподключить». (server_ip можно оставить пустым)";
     }
     return "Туннель не активен. Нажмите «Подключить / переподключить» после сохранения настроек.";
   };
@@ -156,7 +174,7 @@ export default function SettingsPage() {
       return "CloudPub выключен. Включите CloudPub, сохраните и примените настройки.";
     }
     if (code === "cloudpub_not_configured") {
-      return "CloudPub не настроен: заполните server_ip и access_key, затем сохраните настройки.";
+      return "CloudPub не настроен: заполните email+password (рекомендуется) или token (access_key), затем сохраните настройки. (server_ip можно оставить пустым)";
     }
     if (code === "expired") {
       return "CloudPub-сессия истекла по auto-expire. Подключите туннель заново.";
@@ -388,24 +406,44 @@ export default function SettingsPage() {
     }
   };
 
-  const onCloudpubConnect = async () => {
-    try {
-      setCloudpubBusy(true);
-      setCloudpubMsg(null);
-      const payload = {
-        server_ip: String(settings?.cloudpub?.server_ip || "").trim(),
-        access_key: String(settings?.cloudpub?.access_key || "").trim(),
-      };
-      const r = await cloudpubConnect(payload);
-      if (r?.ok) setCloudpubMsg(`✅ CloudPub подключён: ${r?.target || payload.server_ip}. Проверь ссылку ниже.`);
-      else setCloudpubMsg(`❌ CloudPub: ${cloudpubErrorText(r?.error)}`);
-      await fetchCloudpubStatus();
-    } catch (e: any) {
-      setCloudpubMsg(`❌ CloudPub: ${cloudpubErrorText(e?.message || e)}`);
-    } finally {
-      setCloudpubBusy(false);
+const onCloudpubConnect = async () => {
+  try {
+    setCloudpubBusy(true);
+    setCloudpubMsg(null);
+
+    const cleanSecret = (v: any) => {
+      const s = String(v || "").trim();
+      return s === "***" || s === "•••" ? "" : s;
+    };
+
+    // ВАЖНО: не отправляем "***" обратно в backend, иначе он перебивает реальные креды из settings.json
+    const email = String(settings?.cloudpub?.email || "").trim();
+    const password = cleanSecret(settings?.cloudpub?.password);
+    const access_key = cleanSecret(settings?.cloudpub?.access_key);
+
+    // Формируем payload только из реально введённых значений.
+    // Если пользователь не менял пароль/токен, payload будет {} и backend возьмёт секреты из /config/settings.json
+    const payload: any = {};
+    if (email) payload.email = email;
+    if (password) payload.password = password;
+    if (access_key) payload.access_key = access_key;
+
+    const r = await cloudpubConnect(payload);
+
+    if (r?.ok) {
+      const url = r?.public_url ? ` ${String(r.public_url)}` : "";
+      setCloudpubMsg(`✅ CloudPub подключён.${url ? " Публичная ссылка:" + url : " Проверь ссылку ниже."}`);
+    } else {
+      setCloudpubMsg(`❌ CloudPub: ${cloudpubErrorText(r?.error)}`);
     }
-  };
+
+    await fetchCloudpubStatus();
+  } catch (e: any) {
+    setCloudpubMsg(`❌ CloudPub: ${cloudpubErrorText(e?.message || e)}`);
+  } finally {
+    setCloudpubBusy(false);
+  }
+};
 
   const onCloudpubDisconnect = async () => {
     try {
@@ -613,8 +651,10 @@ export default function SettingsPage() {
                 <div className="cardHead"><div className="cardTitle">CloudPub / удалённый доступ</div></div>
                 <div className="cardBody">
                   <ToggleRow label="Включить CloudPub" checked={!!settings?.cloudpub?.enabled} onChange={(v) => patch("cloudpub.enabled", v)} />
-                  <TextRow label="Адрес сервера (домен/IP)" value={String(settings?.cloudpub?.server_ip || "")} onChange={(v) => patch("cloudpub.server_ip", v)} />
-                  <TextRow label="Ключ доступа" value={String(settings?.cloudpub?.access_key || "")} onChange={(v) => patch("cloudpub.access_key", v)} />
+                  
+                  <TextRow label="email" value={String(settings?.cloudpub?.email || "")} placeholder="user@example.com" onChange={(v) => patch("cloudpub.email", v)} />
+                  <TextRow label="password" type="password" value={String(settings?.cloudpub?.password || "")} placeholder="пароль CloudPub" onChange={(v) => patch("cloudpub.password", v)} />
+                  <TextRow label="token (access_key, опц.)" value={String(settings?.cloudpub?.access_key || "")} placeholder="если используешь token вместо email/pass" onChange={(v) => patch("cloudpub.access_key", v)} />
                   <SliderRow label="Auto-expire, мин" hint="0 = не отключать автоматически" value={Number(settings?.cloudpub?.auto_expire_min ?? 0)} min={0} max={1440} step={5} onChange={(v) => patch("cloudpub.auto_expire_min", v)} />
                   <div className="row" style={{ gap: 10, flexWrap: "wrap" }}>
                     <button className="btn btn-ghost" type="button" onClick={fetchCloudpubStatus} disabled={cloudpubBusy}>Статус</button>
@@ -623,8 +663,8 @@ export default function SettingsPage() {
                     <button className="btn" type="button" onClick={onCloudpubClearAudit} disabled={cloudpubBusy}>Очистить историю</button>
                   </div>
                   <div className="hint" style={{ marginTop: 8 }}>
-                    Как подключить: 1) включи CloudPub, 2) укажи адрес сервера из CloudPub-кабинета/документации, 3) вставь access key,
-                    4) Сохранить + Применить, 5) нажми «Подключить / переподключить».
+                    Как подключить: 1) включи CloudPub, 2) заполни email+password (рекомендуется) или token (access_key),
+                    3) Сохранить + Применить, 4) нажми «Подключить / переподключить».
                   </div>
                   <div className="hint" style={{ marginTop: 6 }}>
                     Документация: <a href="https://cloudpub.ru/docs/" target="_blank" rel="noreferrer">cloudpub.ru/docs</a>

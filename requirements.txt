@@ -12,5 +12,8 @@ numpy==1.26.4
 paho-mqtt==2.1.0
 requests==2.32.3
 
+# --- remote tunnel ---
+cloudpub-python-sdk
+
 # --- YOLOv8 loader (без torch здесь!) ---
 ultralytics==8.3.0

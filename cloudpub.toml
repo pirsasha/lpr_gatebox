@@ -1,0 +1,3 @@
+﻿server = "api.cloudpub.com"
+port = 443
+ssl = true

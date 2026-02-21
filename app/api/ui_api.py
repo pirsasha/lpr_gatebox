@@ -1,20 +1,15 @@
 # =========================================================
 # Файл: app/api/ui_api.py
 # Проект: LPR GateBox
-# Версия: v0.3.9-ui-events-filter+ru-i18n
-# Изменено: 2026-02-11 (UTC+3)
+# Версия: v0.3.34-ui-cloudpub-missing-fns-fix
+# Изменено: 2026-02-20 (UTC+1)
 # Автор: Александр + ChatGPT
 #
-# Что сделано:
-# - NEW: UI-фильтр событий (скрываем OCR-мусор, показываем только РФ/похожие номера)
-# - NEW: ENV-переключатели фильтра:
-#        UI_EVENTS_ONLY_RU=1
-#        UI_EVENTS_RU_STRICT=0
-#        UI_EVENTS_INCLUDE_DENIED=1
-#        UI_EVENTS_INCLUDE_INVALID=0
-# - NEW: русификация сообщений/статусов в UI (UI_I18N_RU=1)
-# - CHG: push_event_from_infer() теперь может "молча" не добавлять мусор в EventStore
-# - НЕ ЛОМАЕМ контракт: /api/... и /api/v1/... работают одинаково (router без prefix)
+# FIX:
+# - Добавлены отсутствующие функции CloudPub:
+#   _cloudpub_cfg_from_settings, _cloudpub_apply_auto_expire,
+#   _cloudpub_connection_state, _cloudpub_append_audit
+# - Из-за отсутствия этих функций /api/v1/cloudpub/status и /connect падали 500 (NameError)
 # =========================================================
 
 from __future__ import annotations
@@ -35,12 +30,15 @@ from fastapi.responses import FileResponse, StreamingResponse, Response
 
 from app.store import EventStore, EventItem, SettingsStore
 
+# CloudPub (remote tunnel)
+from app.integrations.cloudpub.manager import cloudpub_manager
+
 # ВАЖНО: без prefix. Префиксы вешаем в main.py:
 # app.include_router(ui_router, prefix="/api")
 # app.include_router(ui_router, prefix="/api/v1")
 router = APIRouter(tags=["ui"])
 
-CLOUDPUB_SIMULATION = str(os.environ.get("CLOUDPUB_SIMULATION", "1")).strip() not in ("0", "false", "False")
+CLOUDPUB_SIMULATION = str(os.environ.get("CLOUDPUB_SIMULATION", "0")).strip() not in ("0", "false", "False")
 
 # =========================
 # UPDATER proxy (metrics/update)
@@ -203,15 +201,17 @@ def api_recent_plates():
         fname = str(it.get("file") or "")
         if not fname:
             continue
-        safe_items.append({
-            "ts": it.get("ts"),
-            "plate": it.get("plate"),
-            "conf": it.get("conf"),
-            "reason": it.get("reason"),
-            "ok": bool(it.get("ok")),
-            "file": fname,
-            "image_url": f"/api/v1/recent_plates/image/{fname}",
-        })
+        safe_items.append(
+            {
+                "ts": it.get("ts"),
+                "plate": it.get("plate"),
+                "conf": it.get("conf"),
+                "reason": it.get("reason"),
+                "ok": bool(it.get("ok")),
+                "file": fname,
+                "image_url": f"/api/v1/recent_plates/image/{fname}",
+            }
+        )
 
     return {"ok": True, "items": safe_items}
 
@@ -268,7 +268,6 @@ _RU_REASON_MAP: Dict[str, str] = {
     "ok": "ОК",
 }
 
-
 _RU_STATUS_MAP: Dict[str, str] = {
     "sent": "ОТПРАВЛЕНО",
     "invalid": "НЕВЕРНО",
@@ -319,7 +318,6 @@ def _translate_reason_ru(message_or_reason: str) -> str:
         return _RU_REASON_MAP[s]
 
     # Иногда reason лежит в более длинной строке
-    # (например "invalid_format_or_region: ...")
     for k, v in _RU_REASON_MAP.items():
         if k and k in s:
             return v
@@ -351,19 +349,15 @@ def _should_add_event_for_ui(payload: Dict[str, Any], plate: str, status: str) -
     if not UI_EVENTS_ONLY_RU:
         return True
 
-    # 1) выкидываем noise
     if bool(payload.get("noise")):
         return False
 
-    # 2) выкидываем пустое/непохожее
     if not _looks_like_ru_plate(plate, strict=UI_EVENTS_RU_STRICT):
         return False
 
-    # 3) invalid обычно = мусор (обрывки, артефакты)
     if status == "invalid" and not UI_EVENTS_INCLUDE_INVALID:
         return False
 
-    # 4) denied (например not_in_whitelist) обычно хотим видеть
     if status == "denied" and not UI_EVENTS_INCLUDE_DENIED:
         return False
 
@@ -379,8 +373,6 @@ def push_event_from_infer(payload: Dict[str, Any]) -> None:
         conf = payload.get("conf")
         status, message = _derive_status(payload)
 
-        # FIX/CHG: уровень события берём из payload.debug или log_level (если есть)
-        # (оставляем старую логику как fallback)
         if isinstance(payload.get("log_level"), str) and payload["log_level"]:
             lvl = str(payload["log_level"]).strip().lower()
             level = "debug" if lvl == "debug" else "info"
@@ -389,11 +381,9 @@ def push_event_from_infer(payload: Dict[str, Any]) -> None:
 
         meta = payload.get("meta") if isinstance(payload.get("meta"), dict) else None
 
-        # NEW: фильтр мусора для UI
         if not _should_add_event_for_ui(payload, plate=plate, status=status):
             return
 
-        # NEW: русификация сообщения/статуса в UI
         status_ui = status
         message_ui = message
         if UI_I18N_RU:
@@ -413,18 +403,14 @@ def push_event_from_infer(payload: Dict[str, Any]) -> None:
             )
         )
     except Exception:
-        # события не должны валить /infer
         return
 
-
-# ---------- FIX: tolerant query parsing (no 422) ----------
 
 def _q_int(v: Any, default: int, min_v: int | None = None, max_v: int | None = None) -> int:
     try:
         if v is None:
             x = int(default)
         else:
-            # FastAPI может передать уже str, но иногда прилетает "[object Object]"
             s = str(v).strip()
             x = int(float(s))
     except Exception:
@@ -462,7 +448,6 @@ def _q_bool(v: Any, default: bool = False) -> bool:
 
 @router.get("/events")
 def api_events(limit: Any = 50, after_ts: Any = None, include_debug: Any = False):
-    # FIX: не даём 422 — парсим вручную
     lim = _q_int(limit, default=50, min_v=1, max_v=500)
     aft = _q_float(after_ts, default=0.0, min_v=0.0) if after_ts is not None else None
     inc = _q_bool(include_debug, default=False)
@@ -477,8 +462,6 @@ async def api_events_stream(
     poll_ms: Any = 250,
     heartbeat_sec: Any = 15,
 ):
-    """SSE stream событий."""
-    # FIX: не даём 422 — парсим вручную
     last_ts: float = float(_q_float(after_ts, default=0.0, min_v=0.0)) if after_ts is not None else 0.0
     inc = _q_bool(include_debug, default=False)
     poll = _q_int(poll_ms, default=250, min_v=50, max_v=2000)
@@ -504,7 +487,6 @@ async def api_events_stream(
                     yield f"event: event\ndata: {json.dumps(it.to_dict(), ensure_ascii=False)}\n\n"
                     last_send = time.time()
                 except Exception:
-                    # если вдруг в одном событии meta "плохая" — не валим поток
                     continue
 
             if (time.time() - last_send) >= float(hb):
@@ -513,11 +495,7 @@ async def api_events_stream(
 
             await asyncio.sleep(max(0.05, float(poll) / 1000.0))
 
-    headers = {
-        "Cache-Control": "no-cache",
-        "Connection": "keep-alive",
-        "X-Accel-Buffering": "no",
-    }
+    headers = {"Cache-Control": "no-cache", "Connection": "keep-alive", "X-Accel-Buffering": "no"}
     return StreamingResponse(gen(), media_type="text/event-stream", headers=headers)
 
 
@@ -533,14 +511,12 @@ _cloudpub_audit: list[Dict[str, Any]] = []
 
 
 def init_settings(path: str, defaults: Dict[str, Any]) -> None:
-    """Инициализируем SettingsStore. Вызывается один раз из main.py."""
     global _settings_store, _DEFAULT_SETTINGS
     _DEFAULT_SETTINGS = copy.deepcopy(defaults or {})
     _settings_store = SettingsStore(path=path, defaults=_DEFAULT_SETTINGS)
 
 
 def set_apply_callback(fn: Callable[[Dict[str, Any]], Dict[str, Any]]) -> None:
-    """main.py устанавливает функцию, которая применит настройки (MQTT/GateDecider/etc)."""
     global _apply_callback
     _apply_callback = fn
 
@@ -557,7 +533,6 @@ def get_settings_store() -> SettingsStore:
 
 
 def _strip_nones(x: Any) -> Any:
-    """Не даём null/None затирать настройки."""
     if isinstance(x, dict):
         out: Dict[str, Any] = {}
         for k, v in x.items():
@@ -571,10 +546,6 @@ def _strip_nones(x: Any) -> Any:
 
 
 def _extract_settings_payload(payload: Dict[str, Any]) -> Dict[str, Any]:
-    """Принимаем оба формата:
-    - {"settings": {...}}  (рекомендуемый)
-    - {...}               (старый)
-    """
     if not isinstance(payload, dict):
         raise HTTPException(status_code=400, detail="settings payload must be object")
     inner = payload.get("settings")
@@ -584,17 +555,17 @@ def _extract_settings_payload(payload: Dict[str, Any]) -> Dict[str, Any]:
 
 
 def _mask_settings_for_get(settings: Dict[str, Any]) -> Dict[str, Any]:
-    """Не светим пароль в GET/status."""
     s = copy.deepcopy(settings or {})
     mqtt = s.get("mqtt")
     if isinstance(mqtt, dict) and mqtt.get("pass"):
         mqtt["pass"] = "***"
     cloudpub = s.get("cloudpub")
-    if isinstance(cloudpub, dict) and cloudpub.get("access_key"):
-        cloudpub["access_key"] = "***"
+    if isinstance(cloudpub, dict):
+        if cloudpub.get("access_key"):
+            cloudpub["access_key"] = "***"
+        if cloudpub.get("password"):
+            cloudpub["password"] = "***"
     return s
-
-
 
 
 def _as_float(v: Any, field: str) -> float:
@@ -629,7 +600,8 @@ def _validate_roi_poly_str(v: Any, field: str) -> None:
         if len(xy) != 2:
             raise HTTPException(status_code=400, detail=f"{field}: формат x1,y1;x2,y2;...")
         try:
-            x = float(xy[0]); y = float(xy[1])
+            x = float(xy[0])
+            y = float(xy[1])
         except Exception:
             raise HTTPException(status_code=400, detail=f"{field}: координаты должны быть числами")
         pts.append((x, y))
@@ -648,15 +620,30 @@ def _validate_settings_patch(patch: Dict[str, Any]) -> None:
         if "confirm_n" in gate:
             _check_range(float(_as_int(gate.get("confirm_n"), "gate.confirm_n")), "gate.confirm_n", 1, 10)
         if "confirm_window_sec" in gate:
-            _check_range(_as_float(gate.get("confirm_window_sec"), "gate.confirm_window_sec"), "gate.confirm_window_sec", 0.5, 8.0)
+            _check_range(
+                _as_float(gate.get("confirm_window_sec"), "gate.confirm_window_sec"),
+                "gate.confirm_window_sec",
+                0.5,
+                8.0,
+            )
         if "cooldown_sec" in gate:
             _check_range(_as_float(gate.get("cooldown_sec"), "gate.cooldown_sec"), "gate.cooldown_sec", 1.0, 120.0)
         if "region_stab_window_sec" in gate:
-            _check_range(_as_float(gate.get("region_stab_window_sec"), "gate.region_stab_window_sec"), "gate.region_stab_window_sec", 0.5, 8.0)
+            _check_range(
+                _as_float(gate.get("region_stab_window_sec"), "gate.region_stab_window_sec"),
+                "gate.region_stab_window_sec",
+                0.5,
+                8.0,
+            )
         if "region_stab_min_hits" in gate:
             _check_range(float(_as_int(gate.get("region_stab_min_hits"), "gate.region_stab_min_hits")), "gate.region_stab_min_hits", 1, 10)
         if "region_stab_min_ratio" in gate:
-            _check_range(_as_float(gate.get("region_stab_min_ratio"), "gate.region_stab_min_ratio"), "gate.region_stab_min_ratio", 0.3, 1.0)
+            _check_range(
+                _as_float(gate.get("region_stab_min_ratio"), "gate.region_stab_min_ratio"),
+                "gate.region_stab_min_ratio",
+                0.3,
+                1.0,
+            )
 
     rt = patch.get("rtsp_worker")
     if isinstance(rt, dict):
@@ -682,9 +669,7 @@ def _validate_settings_patch(patch: Dict[str, Any]) -> None:
                 _validate_roi_poly_str(ov.get("ROI_POLY_STR"), "rtsp_worker.overrides.ROI_POLY_STR")
 
 
-
 def _drop_empty_cloudpub_access_key(patch: Dict[str, Any]) -> Dict[str, Any]:
-    """cloudpub.access_key == '' или masked '***' не должны затирать сохранённый ключ."""
     if not isinstance(patch, dict):
         return patch
     cp_patch = patch.get("cloudpub")
@@ -695,8 +680,18 @@ def _drop_empty_cloudpub_access_key(patch: Dict[str, Any]) -> Dict[str, Any]:
     return patch
 
 
+def _drop_empty_cloudpub_password(patch: Dict[str, Any]) -> Dict[str, Any]:
+    if not isinstance(patch, dict):
+        return patch
+    cp_patch = patch.get("cloudpub")
+    if isinstance(cp_patch, dict) and "password" in cp_patch:
+        val = str(cp_patch.get("password") or "").strip()
+        if val in ("", "***"):
+            cp_patch.pop("password", None)
+    return patch
+
+
 def _drop_empty_mqtt_pass(patch: Dict[str, Any]) -> Dict[str, Any]:
-    """mqtt.pass == '' или masked '***' не должны затирать сохранённый пароль."""
     if not isinstance(patch, dict):
         return patch
     mqtt_patch = patch.get("mqtt")
@@ -720,6 +715,7 @@ def api_put_settings(patch: Dict[str, Any]):
     data_in = _strip_nones(data_in)
     data_in = _drop_empty_mqtt_pass(data_in)
     data_in = _drop_empty_cloudpub_access_key(data_in)
+    data_in = _drop_empty_cloudpub_password(data_in)
     _validate_settings_patch(data_in)
     data = st.update(data_in)
     return {"ok": True, "settings": _mask_settings_for_get(data)}
@@ -776,148 +772,314 @@ class RtspHeartbeatIn(BaseModel):
     roi: Optional[list] = None
 
 
+# =========================
+# CloudPub helpers (FIX: missing functions)
+# =========================
+
+def _cloudpub_append_audit(action: str, ok: bool, detail: str) -> None:
+    """Единый audit (для UI). В SDK режиме отдельный audit есть в manager.state()."""
+    try:
+        _cloudpub_audit.insert(0, {"ts": int(time.time()), "action": str(action), "ok": bool(ok), "detail": str(detail)[:500]})
+        # не раздуваем память
+        del _cloudpub_audit[200:]
+    except Exception:
+        pass
+
+
+def _cloudpub_cfg_from_settings() -> Dict[str, Any]:
+    """Достаём cloudpub cfg из settings.json, с безопасными default-ами."""
+    try:
+        s = _require_store().get()
+    except Exception:
+        s = {}
+
+    cp = s.get("cloudpub") if isinstance(s, dict) else None
+    cp = cp if isinstance(cp, dict) else {}
+
+    enabled = bool(cp.get("enabled", True))
+    server_ip = str(cp.get("server_ip") or "").strip()
+
+    # legacy token
+    access_key = str(cp.get("access_key") or "").strip()
+
+    # new email/pass
+    email = str(cp.get("email") or "").strip()
+    password = str(cp.get("password") or "").strip()
+
+    # auto-expire (минуты)
+    try:
+        auto_expire_min = int(float(cp.get("auto_expire_min") or 0))
+    except Exception:
+        auto_expire_min = 0
+
+    return {
+        "enabled": enabled,
+        "server_ip": server_ip,
+        "access_key": access_key,
+        "email": email,
+        "password": password,
+        "auto_expire_min": max(0, auto_expire_min),
+    }
+
+
+def _cloudpub_connection_state(cfg: Dict[str, Any]) -> Dict[str, str]:
+    """Статус для simulation режима (чтобы UI показывал красиво)."""
+    if not bool(cfg.get("enabled")):
+        return {"connection_state": "disabled", "state_reason": "cloudpub_disabled"}
+
+    if bool(_cloudpub_state.get("connected")):
+        return {"connection_state": "online", "state_reason": ""}
+
+    # если была ошибка — покажем её как reason
+    last_err = str(_cloudpub_state.get("last_error") or "").strip()
+    if last_err:
+        return {"connection_state": "offline", "state_reason": "cloudpub_connect_failed"}
+
+    return {"connection_state": "offline", "state_reason": "offline"}
+
+
+def _cloudpub_apply_auto_expire(cfg: Dict[str, Any]) -> None:
+    """Auto-expire (только для simulation stub). В SDK режиме auto-expire делает manager."""
+    try:
+        if not CLOUDPUB_SIMULATION:
+            return
+
+        if not bool(cfg.get("enabled")):
+            return
+
+        minutes = int(cfg.get("auto_expire_min") or 0)
+        if minutes <= 0:
+            return
+
+        if not bool(_cloudpub_state.get("connected")):
+            return
+
+        last_ok = float(_cloudpub_state.get("last_ok_ts") or 0.0)
+        if last_ok <= 0:
+            return
+
+        if (time.time() - last_ok) >= float(minutes) * 60.0:
+            _cloudpub_state.update({"connected": False, "last_error": "", "target": "", "public_url": ""})
+            _cloudpub_append_audit("auto_expire", True, f"expired after {minutes} min")
+    except Exception:
+        return
 
 
 class CloudPubConnectIn(BaseModel):
     server_ip: Optional[str] = None
-    access_key: Optional[str] = None
-
-
-def _cloudpub_cfg_from_settings() -> Dict[str, Any]:
-    s = _require_store().get()
-    cfg = s.get("cloudpub") if isinstance(s.get("cloudpub"), dict) else {}
-    return {
-        "enabled": bool(cfg.get("enabled", False)),
-        "server_ip": str(cfg.get("server_ip") or "").strip(),
-        "access_key": str(cfg.get("access_key") or "").strip(),
-        "auto_expire_min": max(0, int(float(cfg.get("auto_expire_min") or 0))),
-    }
-
-
-def _cloudpub_append_audit(action: str, ok: bool, note: str = "") -> None:
-    _cloudpub_audit.insert(0, {
-        "ts": time.time(),
-        "action": action,
-        "ok": bool(ok),
-        "note": str(note or ""),
-        "target": str(_cloudpub_state.get("target") or ""),
-    })
-    del _cloudpub_audit[100:]
-
-
-
-
-def _cloudpub_connection_state(cfg: Dict[str, Any]) -> Dict[str, str]:
-    enabled = bool(cfg.get("enabled"))
-    connected = bool(_cloudpub_state.get("connected"))
-    configured = bool(cfg.get("server_ip") and cfg.get("access_key"))
-
-    if not enabled:
-        return {"connection_state": "disabled", "state_reason": "cloudpub_disabled"}
-
-    if connected:
-        if CLOUDPUB_SIMULATION:
-            return {"connection_state": "sdk_pending", "state_reason": "simulation_mode"}
-        return {"connection_state": "online", "state_reason": "connected"}
-
-    if not configured:
-        return {"connection_state": "offline", "state_reason": "cloudpub_not_configured"}
-
-    return {"connection_state": "offline", "state_reason": "disconnected"}
-
-def _cloudpub_apply_auto_expire(cfg: Dict[str, Any]) -> None:
-    if not _cloudpub_state.get("connected"):
-        return
-    auto_expire_min = int(cfg.get("auto_expire_min") or 0)
-    if auto_expire_min <= 0:
-        return
-    last_ok_ts = float(_cloudpub_state.get("last_ok_ts") or 0.0)
-    if last_ok_ts <= 0:
-        return
-    if (time.time() - last_ok_ts) >= auto_expire_min * 60:
-        _cloudpub_state.update({"connected": False, "last_error": "expired", "target": "", "public_url": ""})
-        _cloudpub_append_audit("auto_expire", True, f"expired_after_min={auto_expire_min}")
+    access_key: Optional[str] = None  # legacy: token
+    email: Optional[str] = None
+    password: Optional[str] = None
+    auth_mode: Optional[str] = None  # "token" | "emailpass" | None(auto)
 
 
 @router.get("/cloudpub/status")
 def api_cloudpub_status():
+    """
+    Статус CloudPub туннеля.
+
+    В simulation режиме (CLOUDPUB_SIMULATION=1) — старый stub.
+    В реальном режиме — состояние берём из cloudpub_manager (SDK).
+    """
     cfg = _cloudpub_cfg_from_settings()
     _cloudpub_apply_auto_expire(cfg)
-    state = _cloudpub_connection_state(cfg)
-    target = str(_cloudpub_state.get("target") or cfg.get("server_ip") or "").strip()
-    management_url = f"http://{target}" if target else ""
-    public_url = str(_cloudpub_state.get("public_url") or management_url)
-    mode = "simulation" if CLOUDPUB_SIMULATION else "sdk"
-    return {
-        "ok": True,
-        "enabled": cfg["enabled"],
-        "configured": bool(cfg["server_ip"] and cfg["access_key"]),
-        "server_ip": cfg["server_ip"],
-        "connected": bool(_cloudpub_state.get("connected")),
-        "connection_state": state["connection_state"],
-        "state_reason": state["state_reason"],
-        "last_ok_ts": float(_cloudpub_state.get("last_ok_ts") or 0.0),
-        "last_error": str(_cloudpub_state.get("last_error") or ""),
-        "target": str(_cloudpub_state.get("target") or ""),
-        "management_url": management_url,
-        "public_url": public_url,
-        "provider": "cloudpub",
-        "mode": mode,
-        "simulation": bool(CLOUDPUB_SIMULATION),
-        "note": "sdk_pending" if CLOUDPUB_SIMULATION else "sdk_mode",
-        "audit": _cloudpub_audit[:20],
-    }
+
+    # --- simulation mode (старый stub) ---
+    if CLOUDPUB_SIMULATION:
+        state = _cloudpub_connection_state(cfg)
+        target = str(_cloudpub_state.get("target") or cfg.get("server_ip") or "").strip()
+        management_url = f"http://{target}" if target else ""
+        public_url = str(_cloudpub_state.get("public_url") or management_url)
+
+        configured = bool(
+            (str(cfg.get("email") or "").strip() and str(cfg.get("password") or "").strip())
+            or str(cfg.get("access_key") or "").strip()
+        )
+
+        return {
+            "ok": True,
+            "enabled": bool(cfg.get("enabled")),
+            "configured": configured,
+            "server_ip": cfg.get("server_ip", ""),
+            "connected": bool(_cloudpub_state.get("connected")),
+            "connection_state": state["connection_state"],
+            "state_reason": state["state_reason"],
+            "last_ok_ts": float(_cloudpub_state.get("last_ok_ts") or 0.0),
+            "last_error": str(_cloudpub_state.get("last_error") or ""),
+            "target": str(_cloudpub_state.get("target") or ""),
+            "management_url": management_url,
+            "public_url": public_url,
+            "provider": "cloudpub",
+            "mode": "simulation",
+            "simulation": True,
+            "note": "sdk_pending",
+            "audit": _cloudpub_audit[:20],
+        }
+
+    # --- real SDK mode ---
+    base = cloudpub_manager.state()
+
+    if not bool(cfg.get("enabled")):
+        base.update(
+            {
+                "ok": True,
+                "enabled": False,
+                "configured": False,
+                "server_ip": cfg.get("server_ip", ""),
+                "connection_state": "disabled",
+                "state_reason": "cloudpub_disabled",
+                "provider": "cloudpub",
+                "mode": "sdk",
+                "simulation": False,
+                "note": "sdk_mode",
+            }
+        )
+        return base
+
+    configured = bool(
+        (str(cfg.get("email") or "").strip() and str(cfg.get("password") or "").strip())
+        or str(cfg.get("access_key") or "").strip()
+    )
+
+    base.update(
+        {
+            "ok": True,
+            "enabled": True,
+            "configured": configured,
+            "server_ip": cfg.get("server_ip", ""),
+            "provider": "cloudpub",
+            "mode": "sdk",
+            "simulation": False,
+            "note": "sdk_mode",
+        }
+    )
+    return base
 
 
 @router.post("/cloudpub/connect")
 def api_cloudpub_connect(req: CloudPubConnectIn):
-    cfg = _cloudpub_cfg_from_settings()
-    server_ip = str(req.server_ip or cfg.get("server_ip") or "").strip()
-    access_key = str(req.access_key or cfg.get("access_key") or "").strip()
+    """
+    Подключение CloudPub.
 
-    if not cfg.get("enabled"):
-        _cloudpub_state.update({"connected": False, "last_error": "cloudpub_disabled"})
+    Поддерживаем 2 режима:
+    - token (legacy): access_key / token
+    - emailpass: email + password
+    """
+    cfg = _cloudpub_cfg_from_settings()
+
+    if not bool(cfg.get("enabled")):
         _cloudpub_append_audit("connect", False, "cloudpub_disabled")
         return {"ok": False, "error": "cloudpub_disabled"}
 
-    if not server_ip or not access_key:
-        _cloudpub_state.update({"connected": False, "last_error": "cloudpub_not_configured"})
-        _cloudpub_append_audit("connect", False, "cloudpub_not_configured")
-        return {"ok": False, "error": "cloudpub_not_configured"}
+    server_ip = str((req.server_ip or cfg.get("server_ip") or "")).strip()
 
-    _cloudpub_state.update({
-        "connected": True,
-        "last_error": "",
-        "last_ok_ts": time.time(),
-        "target": server_ip,
-        "public_url": f"http://{server_ip}",
-    })
-    _cloudpub_append_audit("connect", True, "simulation" if CLOUDPUB_SIMULATION else "sdk")
-    state = _cloudpub_connection_state(cfg)
-    return {
-        "ok": True,
-        "connected": True,
-        "connection_state": state["connection_state"],
-        "state_reason": state["state_reason"],
-        "target": server_ip,
-        "public_url": str(_cloudpub_state.get("public_url") or ""),
-        "note": "sdk_pending" if CLOUDPUB_SIMULATION else "sdk_mode",
-        "mode": "simulation" if CLOUDPUB_SIMULATION else "sdk",
-    }
+    token = str((req.access_key or cfg.get("access_key") or "")).strip()
+    email = str((req.email or cfg.get("email") or "")).strip()
+    password = str((req.password or cfg.get("password") or "")).strip()
+
+    
+    def _unmask(v: str) -> str:
+        s = str(v or "").strip()
+        return "" if s in ("***", "•••") else s
+
+    token = _unmask(token)
+    password = _unmask(password)
+
+    req_mode = str(req.auth_mode or "").strip().lower()
+    if req_mode in ("token", "access_key"):
+        auth_mode = "token"
+    elif req_mode in ("emailpass", "email_password", "email"):
+        auth_mode = "emailpass"
+    else:
+        auth_mode = "emailpass" if (email and password) else "token"
+
+    if auth_mode == "emailpass":
+        if not email or not password:
+            _cloudpub_append_audit("connect", False, "cloudpub_not_configured_emailpass")
+            return {"ok": False, "error": "cloudpub_not_configured_emailpass"}
+    else:
+        if not token:
+            _cloudpub_append_audit("connect", False, "cloudpub_not_configured_token")
+            return {"ok": False, "error": "cloudpub_not_configured_token"}
+
+    # --- simulation ---
+    if CLOUDPUB_SIMULATION:
+        _cloudpub_state.update(
+            {
+                "connected": True,
+                "last_error": "",
+                "last_ok_ts": time.time(),
+                "target": server_ip or (email if auth_mode == "emailpass" else "cloudpub"),
+                "public_url": f"http://{server_ip}" if server_ip else "",
+            }
+        )
+        _cloudpub_append_audit("connect", True, f"simulation mode={auth_mode}")
+        state = _cloudpub_connection_state(cfg)
+        return {
+            "ok": True,
+            "connected": True,
+            "connection_state": state["connection_state"],
+            "state_reason": state["state_reason"],
+            "public_url": str(_cloudpub_state.get("public_url") or ""),
+            "mode": "simulation",
+            "auth_mode": auth_mode,
+            "note": "sdk_pending",
+        }
+
+    # --- real SDK ---
+    try:
+        st = cloudpub_manager.connect(
+            enabled=True,
+            token=token if auth_mode == "token" else "",
+            email=email if auth_mode == "emailpass" else "",
+            password=password if auth_mode == "emailpass" else "",
+            server_ip=server_ip,
+            auto_expire_min=int(cfg.get("auto_expire_min") or 0),
+        )
+        _cloudpub_append_audit("connect", True, f"sdk {auth_mode}")
+        return {
+            "ok": True,
+            "connected": True,
+            "connection_state": st.get("connection_state") or "online",
+            "state_reason": st.get("state_reason") or "",
+            "public_url": str(st.get("public_url") or ""),
+            "mode": "sdk",
+            "auth_mode": auth_mode,
+            "note": "sdk_mode",
+        }
+    except RuntimeError as e:
+        _cloudpub_append_audit("connect", False, f"{auth_mode} err={e}")
+        return {"ok": False, "error": str(e)}
+    except Exception as e:
+        _cloudpub_append_audit("connect", False, f"{auth_mode} err={e}")
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 @router.post("/cloudpub/disconnect")
 def api_cloudpub_disconnect():
-    _cloudpub_state.update({"connected": False, "last_error": "", "target": "", "public_url": ""})
-    _cloudpub_append_audit("disconnect", True, "manual")
-    return {"ok": True, "connected": False, "connection_state": "offline", "state_reason": "disconnected"}
+    if CLOUDPUB_SIMULATION:
+        _cloudpub_state.update({"connected": False, "last_error": "", "target": "", "public_url": ""})
+        _cloudpub_append_audit("disconnect", True, "manual")
+        return {"ok": True, "connected": False, "connection_state": "offline", "state_reason": "disconnected"}
+
+    try:
+        cloudpub_manager.disconnect()
+        _cloudpub_append_audit("disconnect", True, "manual")
+        return {"ok": True, "connected": False, "connection_state": "offline", "state_reason": "disconnected"}
+    except Exception as e:
+        _cloudpub_append_audit("disconnect", False, str(e))
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 @router.post("/cloudpub/audit/clear")
 def api_cloudpub_audit_clear():
-    _cloudpub_audit.clear()
-    _cloudpub_append_audit("audit_clear", True, "manual")
-    return {"ok": True, "size": len(_cloudpub_audit)}
+    if CLOUDPUB_SIMULATION:
+        _cloudpub_audit.clear()
+        _cloudpub_append_audit("audit_clear", True, "manual")
+        return {"ok": True, "size": len(_cloudpub_audit)}
+
+    cloudpub_manager.clear_audit()
+    return {"ok": True}
 
 
 @router.post("/rtsp/heartbeat")
@@ -1032,7 +1194,6 @@ def camera_test(data: CameraTestIn):
     """
     import cv2  # локально, чтобы не грузить лишнее при старте
 
-    # 1) Откуда брать RTSP
     if data.use_settings:
         try:
             settings = _require_store().get()

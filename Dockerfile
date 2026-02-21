@@ -45,6 +45,9 @@ RUN npm ci
 COPY ui/ /ui/
 RUN npm run build
 
+# (опционально) sanity-check: убедимся, что есть index.html и assets
+RUN test -f /ui/dist/index.html && test -d /ui/dist/assets
+
 
 # =========================================================
 # gatebox runtime
@@ -57,9 +60,13 @@ COPY --from=deps /usr/local /usr/local
 # backend
 COPY app /app/app
 
-# ВАЖНО: всегда кладём свежий UI build в static
-# FastAPI раздаёт /app/app/static
-COPY --from=ui_build /ui/dist /app/app/static
+# ---------------------------------------------------------
+# FIX: атомарная статика UI
+# - удаляем старую статику полностью, чтобы не было "мусора"
+# - копируем dist целиком (index.html + assets + vite.svg и т.д.)
+# ---------------------------------------------------------
+RUN rm -rf /app/app/static && mkdir -p /app/app/static
+COPY --from=ui_build /ui/dist/ /app/app/static/
 
 EXPOSE 8080
 CMD ["python", "-m", "uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8080"]
