@@ -1,4 +1,6 @@
-# syntax=docker/dockerfile:1.6
+# =========================================================
+# LPR GateBox – unified Dockerfile (CPU stable)
+# =========================================================
 
 FROM python:3.11-slim AS base
 WORKDIR /work
@@ -8,7 +10,7 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     PIP_DISABLE_PIP_VERSION_CHECK=1 \
     PIP_NO_CACHE_DIR=0
 
-# системные зависимости (opencv-headless обычно ок без libgl)
+# Системные зависимости
 RUN apt-get update && apt-get install -y --no-install-recommends \
     ffmpeg \
     && rm -rf /var/lib/apt/lists/*
@@ -19,33 +21,29 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 # =========================================================
 FROM base AS deps
 
-# Копируем ТОЛЬКО requirements — чтобы правки кода не ломали кэш
 COPY requirements.txt /work/requirements.txt
 
-# 1) CPU torch/torchvision отдельно (чтобы не получить cu12)
-# 2) остальные зависимости с deps
 RUN --mount=type=cache,target=/root/.cache/pip \
     python -m pip install -U pip setuptools wheel && \
-    python -m pip install --index-url https://download.pytorch.org/whl/cpu \
-      torch==2.2.2 torchvision==0.17.2 && \
+    python -m pip install \
+        torch==2.2.2 \
+        torchvision==0.17.2 \
+        --extra-index-url https://download.pytorch.org/whl/cpu && \
     python -m pip install -r /work/requirements.txt
 
 
 # =========================================================
-# ui build (vite -> dist)
+# UI build (vite → dist)
 # =========================================================
 FROM node:20-alpine AS ui_build
 WORKDIR /ui
 
-# Кэш npm deps отдельно от исходников
 COPY ui/package.json ui/package-lock.json* /ui/
 RUN npm ci
 
-# Копируем исходники UI и собираем
 COPY ui/ /ui/
 RUN npm run build
 
-# (опционально) sanity-check: убедимся, что есть index.html и assets
 RUN test -f /ui/dist/index.html && test -d /ui/dist/assets
 
 
@@ -57,15 +55,12 @@ WORKDIR /app
 
 COPY --from=deps /usr/local /usr/local
 
-# backend
 COPY app /app/app
 
-# ---------------------------------------------------------
-# FIX: атомарная статика UI
-# - удаляем старую статику полностью, чтобы не было "мусора"
-# - копируем dist целиком (index.html + assets + vite.svg и т.д.)
-# ---------------------------------------------------------
+# Чистим старую статику
 RUN rm -rf /app/app/static && mkdir -p /app/app/static
+
+# Копируем UI
 COPY --from=ui_build /ui/dist/ /app/app/static/
 
 EXPOSE 8080
@@ -76,6 +71,7 @@ CMD ["python", "-m", "uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "
 # rtsp_worker runtime
 # =========================================================
 FROM base AS rtsp_worker
+
 COPY --from=deps /usr/local /usr/local
 COPY app /work/app
 
