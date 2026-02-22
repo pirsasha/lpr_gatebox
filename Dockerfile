@@ -53,6 +53,20 @@ RUN test -f /ui/dist/index.html && test -d /ui/dist/assets
 FROM base AS gatebox
 WORKDIR /app
 
+# NEW: docker CLI (нужен CloudPub docker-backend'у; daemon НЕ ставим)
+# Требует примонтированный /var/run/docker.sock (у тебя уже есть в compose).
+RUN apt-get update && apt-get install -y --no-install-recommends \
+      ca-certificates curl gnupg \
+    && install -m 0755 -d /etc/apt/keyrings \
+    && curl -fsSL https://download.docker.com/linux/debian/gpg | gpg --dearmor -o /etc/apt/keyrings/docker.gpg \
+    && chmod a+r /etc/apt/keyrings/docker.gpg \
+    && . /etc/os-release \
+    && echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.gpg] https://download.docker.com/linux/debian ${VERSION_CODENAME} stable" \
+       > /etc/apt/sources.list.d/docker.list \
+    && apt-get update \
+    && apt-get install -y --no-install-recommends docker-ce-cli \
+    && rm -rf /var/lib/apt/lists/*
+
 COPY --from=deps /usr/local /usr/local
 
 COPY app /app/app

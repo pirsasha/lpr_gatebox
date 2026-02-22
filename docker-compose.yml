@@ -121,6 +121,7 @@ services:
     volumes:
       - ./models:/models:ro
       - ./config:/config
+      - /var/run/docker.sock:/var/run/docker.sock
 
     healthcheck:
       test:

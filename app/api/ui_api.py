@@ -785,7 +785,31 @@ def _cloudpub_append_audit(action: str, ok: bool, detail: str) -> None:
     except Exception:
         pass
 
+from urllib.parse import urlparse
 
+def _normalize_origin_target_ui(v: str, default_port: int = 8080) -> str:
+    s = str(v or "").strip()
+    if not s:
+        return ""  # пусто = пусть manager возьмёт 127.0.0.1:8080
+
+    # если вставили URL
+    if "://" in s:
+        try:
+            p = urlparse(s)
+            host = p.hostname or ""
+            port = p.port or default_port
+            if host:
+                return f"{host}:{port}"
+        except Exception:
+            pass
+
+    # host:port
+    if ":" in s:
+        return s
+
+    # host
+    return f"{s}:{default_port}"
+    
 def _cloudpub_cfg_from_settings() -> Dict[str, Any]:
     """Достаём cloudpub cfg из settings.json, с безопасными default-ами."""
     try:
@@ -806,6 +830,10 @@ def _cloudpub_cfg_from_settings() -> Dict[str, Any]:
     email = str(cp.get("email") or "").strip()
     password = str(cp.get("password") or "").strip()
 
+    # NEW: backend/protocol
+    backend = str(cp.get("backend") or "docker").strip().lower()   # docker|sdk
+    protocol = str(cp.get("protocol") or "http").strip().lower()  # http|https|tcp (для docker)
+
     # auto-expire (минуты)
     try:
         auto_expire_min = int(float(cp.get("auto_expire_min") or 0))
@@ -818,6 +846,8 @@ def _cloudpub_cfg_from_settings() -> Dict[str, Any]:
         "access_key": access_key,
         "email": email,
         "password": password,
+        "backend": backend,
+        "protocol": protocol,
         "auto_expire_min": max(0, auto_expire_min),
     }
 
@@ -867,10 +897,7 @@ def _cloudpub_apply_auto_expire(cfg: Dict[str, Any]) -> None:
 
 class CloudPubConnectIn(BaseModel):
     server_ip: Optional[str] = None
-    access_key: Optional[str] = None  # legacy: token
-    email: Optional[str] = None
-    password: Optional[str] = None
-    auth_mode: Optional[str] = None  # "token" | "emailpass" | None(auto)
+    access_key: Optional[str] = None  # token
 
 
 @router.get("/cloudpub/status")
@@ -879,7 +906,7 @@ def api_cloudpub_status():
     Статус CloudPub туннеля.
 
     В simulation режиме (CLOUDPUB_SIMULATION=1) — старый stub.
-    В реальном режиме — состояние берём из cloudpub_manager (SDK).
+    В реальном режиме — состояние берём из cloudpub_manager (docker-only manager).
     """
     cfg = _cloudpub_cfg_from_settings()
     _cloudpub_apply_auto_expire(cfg)
@@ -891,10 +918,7 @@ def api_cloudpub_status():
         management_url = f"http://{target}" if target else ""
         public_url = str(_cloudpub_state.get("public_url") or management_url)
 
-        configured = bool(
-            (str(cfg.get("email") or "").strip() and str(cfg.get("password") or "").strip())
-            or str(cfg.get("access_key") or "").strip()
-        )
+        configured = bool(str(cfg.get("access_key") or "").strip())
 
         return {
             "ok": True,
@@ -912,13 +936,50 @@ def api_cloudpub_status():
             "provider": "cloudpub",
             "mode": "simulation",
             "simulation": True,
-            "note": "sdk_pending",
+            "note": "docker_only",
             "audit": _cloudpub_audit[:20],
         }
 
+    # --- real docker-only manager ---
+    base = cloudpub_manager.state()
+    base["target"] = base.get("server_ip") or ""
+
+    if not bool(cfg.get("enabled")):
+        base.update(
+            {
+                "ok": True,
+                "enabled": False,
+                "configured": False,
+                "server_ip": cfg.get("server_ip", ""),
+                "connection_state": "disabled",
+                "state_reason": "cloudpub_disabled",
+                "provider": "cloudpub",
+                "mode": "docker",
+                "simulation": False,
+                "note": "docker_only",
+            }
+        )
+        return base
+
+    configured = bool(str(cfg.get("access_key") or "").strip())
+
+    base.update(
+        {
+            "ok": True,
+            "enabled": True,
+            "configured": configured,
+            "server_ip": cfg.get("server_ip", ""),
+            "provider": "cloudpub",
+            "mode": "docker",
+            "simulation": False,
+            "note": "docker_only",
+        }
+    )
+    return base
+
     # --- real SDK mode ---
     base = cloudpub_manager.state()
-
+    base["target"] = base.get("server_ip") or ""   # просто alias
     if not bool(cfg.get("enabled")):
         base.update(
             {
@@ -959,11 +1020,8 @@ def api_cloudpub_status():
 @router.post("/cloudpub/connect")
 def api_cloudpub_connect(req: CloudPubConnectIn):
     """
-    Подключение CloudPub.
-
-    Поддерживаем 2 режима:
-    - token (legacy): access_key / token
-    - emailpass: email + password
+    Подключение CloudPub (DOCKER ONLY).
+    Используем только token (access_key) и target (server_ip).
     """
     cfg = _cloudpub_cfg_from_settings()
 
@@ -971,36 +1029,19 @@ def api_cloudpub_connect(req: CloudPubConnectIn):
         _cloudpub_append_audit("connect", False, "cloudpub_disabled")
         return {"ok": False, "error": "cloudpub_disabled"}
 
-    server_ip = str((req.server_ip or cfg.get("server_ip") or "")).strip()
+    server_ip = _normalize_origin_target_ui(str((req.server_ip or cfg.get("server_ip") or "")).strip())
 
     token = str((req.access_key or cfg.get("access_key") or "")).strip()
-    email = str((req.email or cfg.get("email") or "")).strip()
-    password = str((req.password or cfg.get("password") or "")).strip()
 
-    
     def _unmask(v: str) -> str:
         s = str(v or "").strip()
         return "" if s in ("***", "•••") else s
 
     token = _unmask(token)
-    password = _unmask(password)
 
-    req_mode = str(req.auth_mode or "").strip().lower()
-    if req_mode in ("token", "access_key"):
-        auth_mode = "token"
-    elif req_mode in ("emailpass", "email_password", "email"):
-        auth_mode = "emailpass"
-    else:
-        auth_mode = "emailpass" if (email and password) else "token"
-
-    if auth_mode == "emailpass":
-        if not email or not password:
-            _cloudpub_append_audit("connect", False, "cloudpub_not_configured_emailpass")
-            return {"ok": False, "error": "cloudpub_not_configured_emailpass"}
-    else:
-        if not token:
-            _cloudpub_append_audit("connect", False, "cloudpub_not_configured_token")
-            return {"ok": False, "error": "cloudpub_not_configured_token"}
+    if not token:
+        _cloudpub_append_audit("connect", False, "cloudpub_not_configured_token")
+        return {"ok": False, "error": "cloudpub_not_configured_token"}
 
     # --- simulation ---
     if CLOUDPUB_SIMULATION:
@@ -1009,11 +1050,11 @@ def api_cloudpub_connect(req: CloudPubConnectIn):
                 "connected": True,
                 "last_error": "",
                 "last_ok_ts": time.time(),
-                "target": server_ip or (email if auth_mode == "emailpass" else "cloudpub"),
+                "target": server_ip or "gatebox:8080",
                 "public_url": f"http://{server_ip}" if server_ip else "",
             }
         )
-        _cloudpub_append_audit("connect", True, f"simulation mode={auth_mode}")
+        _cloudpub_append_audit("connect", True, "simulation token")
         state = _cloudpub_connection_state(cfg)
         return {
             "ok": True,
@@ -1022,36 +1063,34 @@ def api_cloudpub_connect(req: CloudPubConnectIn):
             "state_reason": state["state_reason"],
             "public_url": str(_cloudpub_state.get("public_url") or ""),
             "mode": "simulation",
-            "auth_mode": auth_mode,
-            "note": "sdk_pending",
+            "note": "docker_only",
         }
 
-    # --- real SDK ---
+    # --- real docker-only manager ---
     try:
+        if not server_ip.strip():
+            server_ip = ""  # пусть manager решит дефолт (обычно gatebox:8080)
         st = cloudpub_manager.connect(
             enabled=True,
-            token=token if auth_mode == "token" else "",
-            email=email if auth_mode == "emailpass" else "",
-            password=password if auth_mode == "emailpass" else "",
+            token=token,
             server_ip=server_ip,
             auto_expire_min=int(cfg.get("auto_expire_min") or 0),
         )
-        _cloudpub_append_audit("connect", True, f"sdk {auth_mode}")
+        _cloudpub_append_audit("connect", True, "docker token")
         return {
             "ok": True,
             "connected": True,
             "connection_state": st.get("connection_state") or "online",
             "state_reason": st.get("state_reason") or "",
             "public_url": str(st.get("public_url") or ""),
-            "mode": "sdk",
-            "auth_mode": auth_mode,
-            "note": "sdk_mode",
+            "mode": "docker",
+            "note": "docker_only",
         }
     except RuntimeError as e:
-        _cloudpub_append_audit("connect", False, f"{auth_mode} err={e}")
+        _cloudpub_append_audit("connect", False, f"token err={e}")
         return {"ok": False, "error": str(e)}
     except Exception as e:
-        _cloudpub_append_audit("connect", False, f"{auth_mode} err={e}")
+        _cloudpub_append_audit("connect", False, f"token err={e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 
