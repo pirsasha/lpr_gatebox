@@ -1072,17 +1072,4 @@ STATIC_DIR = os.environ.get("STATIC_DIR", "/app/app/static")
 INDEX_PATH = os.path.join(STATIC_DIR, "index.html")
 
 if os.path.exists(INDEX_PATH):
-    # Главная страница
-    @app.get("/")
-    def ui_index():
-        return FileResponse(INDEX_PATH)
-
-    # SPA fallback (любой путь -> index.html), кроме /api* и /assets*
-    @app.get("/{path:path}")
-    def ui_spa(path: str):
-        if path.startswith("api") or path.startswith("api/"):
-            raise HTTPException(status_code=404)
-        if path.startswith("assets") or path.startswith("assets/"):
-            # assets должен обслужить streaming-роут выше
-            raise HTTPException(status_code=404)
-        return FileResponse(INDEX_PATH)
+    app.mount("/", StaticFiles(directory=STATIC_DIR, html=True), name="ui")

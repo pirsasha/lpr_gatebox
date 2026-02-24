@@ -9,6 +9,7 @@
 # - FIX: auto day/night метрики считаем по ROI сцены (AUTO_METRICS_SOURCE=roi|crop)
 # - NEW: deskew (DESKEW_ENABLE) — лёгкий поворот по горизонту номера для OCR
 # - CHG: deskew_* добавлен в pre_timing (meta в gatebox)
+# - CHG: добавлена диагностика причин pre-sanity reject (`sanity_fail_reason`)
 # - ВАЖНО: остальной пайплайн сохранён (settings poll, tracking, freeze, live, debug)
 # =========================================================
 
@@ -348,17 +349,22 @@ def rectify_plate(crop_bgr: np.ndarray, out_w: int, out_h: int) -> Optional[np.n
     return warped
 
 
-def is_sane_crop(img: np.ndarray) -> bool:
+def sanity_check_crop(img: np.ndarray) -> tuple[bool, str]:
     try:
         hh, ww = img.shape[:2]
     except Exception:
-        return False
+        return False, "invalid_shape"
+
     if ww < int(MIN_PLATE_W) or hh < int(MIN_PLATE_H):
-        return False
+        return False, f"too_small:{ww}x{hh}<min{int(MIN_PLATE_W)}x{int(MIN_PLATE_H)}"
+
     ar = float(ww) / float(max(1, hh))
-    if ar < 1.8 or ar > 8.0:
-        return False
-    return True
+    if ar < 1.8:
+        return False, f"bad_aspect_low:{ar:.3f}<1.8"
+    if ar > 8.0:
+        return False, f"bad_aspect_high:{ar:.3f}>8.0"
+
+    return True, "ok"
 
 
 def maybe_upscale(img: np.ndarray, min_w: int, min_h: int, enable: bool) -> np.ndarray:
@@ -869,6 +875,7 @@ def main() -> None:
 
         pre_variant = "none"
         pre_warped = False
+        sanity_fail_reason = "not_applicable"
 
         pad_used_tick = float(PLATE_PAD_BASE)
         pad_reason_tick = "n/a"
@@ -983,10 +990,13 @@ def main() -> None:
                 pre_warped = False
 
         if crop_to_send is not None and crop_to_send.size > 0:
-            if not is_sane_crop(crop_to_send):
+            sanity_ok_tick, sanity_fail_reason = sanity_check_crop(crop_to_send)
+            if not sanity_ok_tick:
                 crop_to_send = None
                 pre_variant = "rejected_unsane"
                 pre_warped = False
+        else:
+            sanity_fail_reason = "no_candidate_crop"
 
         # APPLY PREPROC
         if crop_to_send is not None and crop_to_send.size > 0:
@@ -1191,6 +1201,7 @@ def main() -> None:
                     "pre_variant": str(pre_variant),
                     "pre_warped": bool(pre_warped),
                     "sanity_ok": bool(crop_to_send is not None and crop_to_send.size > 0),
+                    "sanity_fail_reason": str(sanity_fail_reason),
                     "auto": {
                         "enabled": bool(auto_cfg.enable),
                         "preproc_enabled": bool(AUTO_PREPROC_ENABLE),
@@ -1220,6 +1231,7 @@ def main() -> None:
                 f"track={trk} track_new={int(track_new)} sent={sent} seen={last_seen} sent_plate={last_sent} "
                 f"grab_age_ms={grab_age_ms:.1f} url={current_rtsp_url} variant={pre_variant} "
                 f"pad_used={last_pad_used:.3f} pad_reason={last_pad_reason} bbox={last_bbox_wh[0]}x{last_bbox_wh[1]} "
+                f"sanity={sanity_fail_reason} "
                 f"auto={int(auto_cfg.enable)} preproc={int(AUTO_PREPROC_ENABLE)} profile={auto_profile} "
                 f"auto_src={AUTO_METRICS_SOURCE} deskew={int(DESKEW_ENABLE)}"
             )

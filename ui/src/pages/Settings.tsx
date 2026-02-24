@@ -1,17 +1,5 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
-import {
-  getSettings,
-  putSettings,
-  applySettings,
-  mqttCheck,
-  mqttTestPublish,
-  apiPost,
-  telegramBotInfo,
-  cloudpubStatus,
-  cloudpubConnect,
-  cloudpubDisconnect,
-  cloudpubClearAudit,
-} from "../api";
+import { getSettings, putSettings, applySettings, mqttCheck, mqttTestPublish, apiPost, telegramBotInfo, cloudpubStatus, cloudpubConnect, cloudpubDisconnect, cloudpubClearAudit } from "../api";
 
 type Settings = any;
 type SectionKey = "basic" | "advanced" | "diagnostics";
@@ -33,21 +21,9 @@ function SliderRow({ label, hint, value, min, max, step, onChange }: SliderProps
         <label className="muted">{label}</label>
         <span className="mono">{Number.isFinite(value) ? value : "—"}</span>
       </div>
-      {hint ? (
-        <div className="hint muted" style={{ marginTop: 4 }}>
-          {hint}
-        </div>
-      ) : null}
+      {hint ? <div className="hint muted" style={{ marginTop: 4 }}>{hint}</div> : null}
       <div className="row" style={{ marginTop: 6 }}>
-        <input
-          type="range"
-          min={min}
-          max={max}
-          step={step}
-          value={Number.isFinite(value) ? value : min}
-          onChange={(e) => onChange(Number(e.target.value))}
-          style={{ flex: 1 }}
-        />
+        <input type="range" min={min} max={max} step={step} value={Number.isFinite(value) ? value : min} onChange={(e) => onChange(Number(e.target.value))} style={{ flex: 1 }} />
       </div>
     </div>
   );
@@ -72,31 +48,11 @@ function ToggleRow({ label, hint, checked, onChange }: ToggleProps) {
   );
 }
 
-function TextRow({
-  label,
-  value,
-  onChange,
-  type,
-  placeholder,
-}: {
-  label: string;
-  value: string;
-  onChange: (v: string) => void;
-  type?: string;
-  placeholder?: string;
-}) {
+function TextRow({ label, value, onChange }: { label: string; value: string; onChange: (v: string) => void }) {
   return (
     <div className="row" style={{ marginBottom: 10 }}>
-      <label className="muted" style={{ width: 180 }}>
-        {label}
-      </label>
-      <input
-        className="input mono"
-        type={type || "text"}
-        value={value}
-        placeholder={placeholder || ""}
-        onChange={(e) => onChange(e.target.value)}
-      />
+      <label className="muted" style={{ width: 180 }}>{label}</label>
+      <input className="input mono" value={value} onChange={(e) => onChange(e.target.value)} />
     </div>
   );
 }
@@ -116,36 +72,12 @@ function mergeDeep(base: any, patch: any): any {
 
 const DAY_PROFILE = {
   gate: { min_conf: 0.8, confirm_n: 2, confirm_window_sec: 2.0, cooldown_sec: 15 },
-  rtsp_worker: {
-    overrides: {
-      DET_CONF: 0.28,
-      DET_IOU: 0.45,
-      READ_FPS: 15,
-      DET_FPS: 3,
-      SEND_FPS: 3,
-      AUTO_MODE: 0,
-      AUTO_DROP_ON_BLUR: 0,
-      AUTO_DROP_ON_GLARE: 0,
-      JPEG_QUALITY: 92,
-    },
-  },
+  rtsp_worker: { overrides: { DET_CONF: 0.28, DET_IOU: 0.45, READ_FPS: 15, DET_FPS: 3, SEND_FPS: 3, AUTO_MODE: 0, AUTO_DROP_ON_BLUR: 0, AUTO_DROP_ON_GLARE: 0, JPEG_QUALITY: 92 } },
 };
 
 const NIGHT_PROFILE = {
   gate: { min_conf: 0.86, confirm_n: 3, confirm_window_sec: 2.8, cooldown_sec: 18 },
-  rtsp_worker: {
-    overrides: {
-      DET_CONF: 0.35,
-      DET_IOU: 0.45,
-      READ_FPS: 12,
-      DET_FPS: 2,
-      SEND_FPS: 2,
-      AUTO_MODE: 1,
-      AUTO_DROP_ON_BLUR: 1,
-      AUTO_DROP_ON_GLARE: 1,
-      JPEG_QUALITY: 95,
-    },
-  },
+  rtsp_worker: { overrides: { DET_CONF: 0.35, DET_IOU: 0.45, READ_FPS: 12, DET_FPS: 2, SEND_FPS: 2, AUTO_MODE: 1, AUTO_DROP_ON_BLUR: 1, AUTO_DROP_ON_GLARE: 1, JPEG_QUALITY: 95 } },
 };
 
 function extractRuntimeSnapshot(s: any) {
@@ -195,11 +127,10 @@ export default function SettingsPage() {
   const [cloudpubMsg, setCloudpubMsg] = useState<string | null>(null);
   const [cloudpubState, setCloudpubState] = useState<any>(null);
 
-  // -------- CloudPub (docker-only) helpers --------
-
   const cloudpubStateLabel = (state: any) => {
     const st = String(state?.connection_state || "").toLowerCase();
     if (st === "online") return "online";
+    if (st === "sdk_pending") return "sdk_pending";
     if (st === "disabled") return "disabled";
     return "offline";
   };
@@ -209,21 +140,23 @@ export default function SettingsPage() {
     const reason = String(state?.state_reason || "");
 
     if (st === "disabled") return "CloudPub выключен в настройках. Включите тумблер и сохраните настройки.";
+    if (st === "sdk_pending") return "CloudPub работает в simulation-режиме. Для реального туннеля подключите SDK на backend.";
     if (st === "online") return "Туннель активен.";
 
-    if (reason === "cloudpub_not_configured_token" || reason === "cloudpub_not_configured") {
-      return "CloudPub включен, но не настроен: укажите token (access_key), сохраните и нажмите «Подключить / переподключить». (origin можно оставить пустым — будет gatebox:8080)";
+    if (reason === "cloudpub_not_configured") {
+      return "CloudPub включен, но не настроен: укажите server_ip и access_key, сохраните и нажмите «Подключить / переподключить».";
     }
     return "Туннель не активен. Нажмите «Подключить / переподключить» после сохранения настроек.";
   };
+
 
   const cloudpubErrorText = (errRaw: any) => {
     const code = String(errRaw || "");
     if (code === "cloudpub_disabled") {
       return "CloudPub выключен. Включите CloudPub, сохраните и примените настройки.";
     }
-    if (code === "cloudpub_not_configured" || code === "cloudpub_not_configured_token") {
-      return "CloudPub не настроен: заполните token (access_key), затем сохраните настройки. (origin можно оставить пустым)";
+    if (code === "cloudpub_not_configured") {
+      return "CloudPub не настроен: заполните server_ip и access_key, затем сохраните настройки.";
     }
     if (code === "expired") {
       return "CloudPub-сессия истекла по auto-expire. Подключите туннель заново.";
@@ -231,7 +164,6 @@ export default function SettingsPage() {
     return code || "неизвестная ошибка";
   };
 
-  // -------- core load/save/apply --------
 
   const load = async () => {
     try {
@@ -443,7 +375,6 @@ export default function SettingsPage() {
     }
   };
 
-  // -------- CloudPub handlers --------
 
   const fetchCloudpubStatus = async () => {
     try {
@@ -461,28 +392,13 @@ export default function SettingsPage() {
     try {
       setCloudpubBusy(true);
       setCloudpubMsg(null);
-
-      const cleanSecret = (v: any) => {
-        const s = String(v || "").trim();
-        return s === "***" || s === "•••" ? "" : s;
+      const payload = {
+        server_ip: String(settings?.cloudpub?.server_ip || "").trim(),
+        access_key: String(settings?.cloudpub?.access_key || "").trim(),
       };
-
-      const access_key = cleanSecret(settings?.cloudpub?.access_key);
-      const server_ip = String(settings?.cloudpub?.server_ip || "").trim();
-
-      const payload: any = {};
-      if (server_ip) payload.server_ip = server_ip;
-      if (access_key) payload.access_key = access_key;
-
       const r = await cloudpubConnect(payload);
-
-      if (r?.ok) {
-        const url = r?.public_url ? ` ${String(r.public_url)}` : "";
-        setCloudpubMsg(`✅ CloudPub подключён.${url ? " Публичная ссылка:" + url : " Проверь ссылку ниже."}`);
-      } else {
-        setCloudpubMsg(`❌ CloudPub: ${cloudpubErrorText(r?.error)}`);
-      }
-
+      if (r?.ok) setCloudpubMsg(`✅ CloudPub подключён: ${r?.target || payload.server_ip}. Проверь ссылку ниже.`);
+      else setCloudpubMsg(`❌ CloudPub: ${cloudpubErrorText(r?.error)}`);
       await fetchCloudpubStatus();
     } catch (e: any) {
       setCloudpubMsg(`❌ CloudPub: ${cloudpubErrorText(e?.message || e)}`);
@@ -535,11 +451,7 @@ export default function SettingsPage() {
   const customProfiles = useMemo(() => Object.keys(settings?.ui?.profiles || {}), [settings]);
 
   if (!settings) {
-    return (
-      <div className="card">
-        <div className="cardBody muted">Загрузка…</div>
-      </div>
-    );
+    return <div className="card"><div className="cardBody muted">Загрузка…</div></div>;
   }
 
   return (
@@ -548,15 +460,9 @@ export default function SettingsPage() {
         <div className="cardHead">
           <div className="cardTitle">Настройки (перенос из ENV)</div>
           <div className="row">
-            <button className={`btn ${section === "basic" ? "btn-primary" : "btn-ghost"}`} type="button" onClick={() => setSection("basic")}>
-              Базовые
-            </button>
-            <button className={`btn ${section === "advanced" ? "btn-primary" : "btn-ghost"}`} type="button" onClick={() => setSection("advanced")}>
-              Продвинутые
-            </button>
-            <button className={`btn ${section === "diagnostics" ? "btn-primary" : "btn-ghost"}`} type="button" onClick={() => setSection("diagnostics")}>
-              Диагностика
-            </button>
+            <button className={`btn ${section === "basic" ? "btn-primary" : "btn-ghost"}`} type="button" onClick={() => setSection("basic")}>Базовые</button>
+            <button className={`btn ${section === "advanced" ? "btn-primary" : "btn-ghost"}`} type="button" onClick={() => setSection("advanced")}>Продвинутые</button>
+            <button className={`btn ${section === "diagnostics" ? "btn-primary" : "btn-ghost"}`} type="button" onClick={() => setSection("diagnostics")}>Диагностика</button>
           </div>
           <div className="row">
             <button className="btn btn-ghost" type="button" onClick={load}>
@@ -575,47 +481,26 @@ export default function SettingsPage() {
           {err ? <div className="alert alert-error mono">{err}</div> : null}
           {info ? <div className="alert mono">{info}</div> : null}
 
-          {/* профили (как было) */}
           <div className="card" style={{ marginBottom: 12 }}>
-            <div className="cardHead">
-              <div className="cardTitle">Профили (день / ночь / свои)</div>
-            </div>
+            <div className="cardHead"><div className="cardTitle">Профили (день / ночь / свои)</div></div>
             <div className="cardBody">
               <div className="row" style={{ gap: 10, flexWrap: "wrap" }}>
-                <button className="btn" onClick={() => applySnapshot("day", DAY_PROFILE)}>
-                  Применить «День»
-                </button>
-                <button className="btn" onClick={() => applySnapshot("night", NIGHT_PROFILE)}>
-                  Применить «Ночь»
-                </button>
-                <button className="btn" onClick={rollbackProfile}>
-                  Откатить последний профиль
-                </button>
+                <button className="btn" onClick={() => applySnapshot("day", DAY_PROFILE)}>Применить «День»</button>
+                <button className="btn" onClick={() => applySnapshot("night", NIGHT_PROFILE)}>Применить «Ночь»</button>
+                <button className="btn" onClick={rollbackProfile}>Откатить последний профиль</button>
                 <span className="muted mono">active: {String(settings?.ui?.active_profile || "—")}</span>
               </div>
 
               <div className="row" style={{ marginTop: 10, gap: 10, flexWrap: "wrap" }}>
                 <input className="input mono" style={{ width: 220 }} value={profileName} onChange={(e) => setProfileName(e.target.value)} placeholder="имя профиля" />
-                <button className="btn" onClick={saveCurrentAsProfile}>
-                  Сохранить текущие как профиль
-                </button>
+                <button className="btn" onClick={saveCurrentAsProfile}>Сохранить текущие как профиль</button>
                 <select className="input mono" style={{ width: 220 }} value={selectedCustom} onChange={(e) => setSelectedCustom(e.target.value)}>
                   <option value="">— выбрать свой профиль —</option>
-                  {customProfiles.map((k) => (
-                    <option key={k} value={k}>
-                      {k}
-                    </option>
-                  ))}
+                  {customProfiles.map((k) => <option key={k} value={k}>{k}</option>)}
                 </select>
-                <button className="btn" onClick={applyCustomProfile}>
-                  Применить свой профиль
-                </button>
-                <button className="btn" onClick={exportProfiles}>
-                  Экспорт профилей
-                </button>
-                <button className="btn" onClick={() => importInputRef.current?.click()}>
-                  Импорт профилей
-                </button>
+                <button className="btn" onClick={applyCustomProfile}>Применить свой профиль</button>
+                <button className="btn" onClick={exportProfiles}>Экспорт профилей</button>
+                <button className="btn" onClick={() => importInputRef.current?.click()}>Импорт профилей</button>
                 <input
                   ref={importInputRef}
                   type="file"
@@ -636,13 +521,10 @@ export default function SettingsPage() {
             </div>
           </div>
 
-          {/* BASIC/ADVANCED sections unchanged (как у тебя) */}
           {section === "basic" ? (
             <div className="grid2">
               <div className="card">
-                <div className="cardHead">
-                  <div className="cardTitle">Gate / решение о проезде</div>
-                </div>
+                <div className="cardHead"><div className="cardTitle">Gate / решение о проезде</div></div>
                 <div className="cardBody">
                   <SliderRow label="Порог уверенности OCR (MIN_CONF)" hint="Чем выше, тем меньше ложных срабатываний" value={Number(settings?.gate?.min_conf ?? 0.85)} min={0.5} max={0.99} step={0.01} onChange={(v) => patch("gate.min_conf", v)} />
                   <SliderRow label="Подтверждений подряд (CONFIRM_N)" value={Number(settings?.gate?.confirm_n ?? 2)} min={1} max={6} step={1} onChange={(v) => patch("gate.confirm_n", v)} />
@@ -653,9 +535,7 @@ export default function SettingsPage() {
               </div>
 
               <div className="card">
-                <div className="cardHead">
-                  <div className="cardTitle">RTSP worker / ключевые параметры</div>
-                </div>
+                <div className="cardHead"><div className="cardTitle">RTSP worker / ключевые параметры</div></div>
                 <div className="cardBody">
                   <SliderRow label="READ_FPS" value={Number(ov.READ_FPS ?? 15)} min={1} max={30} step={1} onChange={(v) => patch("rtsp_worker.overrides.READ_FPS", v)} />
                   <SliderRow label="DET_FPS" value={Number(ov.DET_FPS ?? 2)} min={1} max={15} step={0.5} onChange={(v) => patch("rtsp_worker.overrides.DET_FPS", v)} />
@@ -671,9 +551,7 @@ export default function SettingsPage() {
           {section === "advanced" ? (
             <div className="grid2">
               <div className="card">
-                <div className="cardHead">
-                  <div className="cardTitle">Gate / стабилизация региона</div>
-                </div>
+                <div className="cardHead"><div className="cardTitle">Gate / стабилизация региона</div></div>
                 <div className="cardBody">
                   <ToggleRow label="Стабилизация региона (REGION_STAB)" checked={!!settings?.gate?.region_stab} onChange={(v) => patch("gate.region_stab", v)} />
                   <SliderRow label="Окно стабилизации региона, сек" value={Number(settings?.gate?.region_stab_window_sec ?? 2.5)} min={0.5} max={8} step={0.1} onChange={(v) => patch("gate.region_stab_window_sec", v)} />
@@ -683,9 +561,7 @@ export default function SettingsPage() {
               </div>
 
               <div className="card">
-                <div className="cardHead">
-                  <div className="cardTitle">RTSP worker / расширенная обработка</div>
-                </div>
+                <div className="cardHead"><div className="cardTitle">RTSP worker / расширенная обработка</div></div>
                 <div className="cardBody">
                   <SliderRow label="IOU NMS (DET_IOU)" value={Number(ov.DET_IOU ?? 0.45)} min={0.1} max={0.9} step={0.01} onChange={(v) => patch("rtsp_worker.overrides.DET_IOU", v)} />
                   <SliderRow label="JPEG качество" value={Number(ov.JPEG_QUALITY ?? 94)} min={60} max={100} step={1} onChange={(v) => patch("rtsp_worker.overrides.JPEG_QUALITY", v)} />
@@ -704,11 +580,8 @@ export default function SettingsPage() {
 
           {section === "diagnostics" ? (
             <div className="grid2">
-              {/* MQTT card unchanged */}
               <div className="card">
-                <div className="cardHead">
-                  <div className="cardTitle">MQTT</div>
-                </div>
+                <div className="cardHead"><div className="cardTitle">MQTT</div></div>
                 <div className="cardBody">
                   <ToggleRow label="Включить MQTT" checked={!!settings?.mqtt?.enabled} onChange={(v) => patch("mqtt.enabled", v)} />
                   <TextRow label="MQTT host" value={String(settings?.mqtt?.host || "")} onChange={(v) => patch("mqtt.host", v)} />
@@ -717,105 +590,51 @@ export default function SettingsPage() {
                   <TextRow label="MQTT pass" value={String(settings?.mqtt?.pass || "")} onChange={(v) => patch("mqtt.pass", v)} />
                   <TextRow label="MQTT topic" value={String(settings?.mqtt?.topic || "")} onChange={(v) => patch("mqtt.topic", v)} />
                   <div className="row" style={{ gap: 10, flexWrap: "wrap" }}>
-                    <button className="btn btn-ghost" type="button" onClick={onMqttCheck} disabled={mqttDiagBusy}>
-                      Проверить связь
-                    </button>
-                    <button className="btn btn-primary" type="button" onClick={onMqttTestTopic} disabled={mqttDiagBusy}>
-                      Отправить тестовый топик
-                    </button>
+                    <button className="btn btn-ghost" type="button" onClick={onMqttCheck} disabled={mqttDiagBusy}>Проверить связь</button>
+                    <button className="btn btn-primary" type="button" onClick={onMqttTestTopic} disabled={mqttDiagBusy}>Отправить тестовый топик</button>
                   </div>
                   {mqttDiagMsg ? <div className="hint" style={{ marginTop: 8 }}>{mqttDiagMsg}</div> : null}
                 </div>
               </div>
 
-              {/* Telegram card unchanged */}
               <div className="card">
-                <div className="cardHead">
-                  <div className="cardTitle">Telegram</div>
-                </div>
+                <div className="cardHead"><div className="cardTitle">Telegram</div></div>
                 <div className="cardBody">
                   <ToggleRow label="Включить Telegram" checked={!!settings?.telegram?.enabled} onChange={(v) => patch("telegram.enabled", v)} />
                   <ToggleRow label="Присылать фото" checked={!!(settings?.telegram?.send_photo ?? true)} onChange={(v) => patch("telegram.send_photo", v)} />
                   <TextRow label="Bot token" value={String(settings?.telegram?.bot_token || "")} onChange={(v) => patch("telegram.bot_token", v)} />
                   <TextRow label="Chat ID" value={String(settings?.telegram?.chat_id ?? "")} onChange={(v) => patch("telegram.chat_id", v.trim() || null)} />
-                  {botLink ? (
-                    <div className="hint" style={{ marginBottom: 8 }}>
-                      Ссылка на бота:{" "}
-                      <a href={botLink} target="_blank" rel="noreferrer">
-                        {botLink}
-                      </a>
-                    </div>
-                  ) : null}
-                  <div className="hint" style={{ marginBottom: 8 }}>
-                    Открой бота, нажми <span className="mono">/start</span>, после чего проверь/заполни <span className="mono">Chat ID</span>.
-                  </div>
+                  {botLink ? <div className="hint" style={{ marginBottom: 8 }}>Ссылка на бота: <a href={botLink} target="_blank" rel="noreferrer">{botLink}</a></div> : null}
+                  <div className="hint" style={{ marginBottom: 8 }}>Открой бота, нажми <span className="mono">/start</span>, после чего проверь/заполни <span className="mono">Chat ID</span>.</div>
                   <div className="row" style={{ gap: 10, flexWrap: "wrap" }}>
-                    <button className="btn btn-ghost" type="button" onClick={fetchBotInfo} disabled={telegramBusy}>
-                      Обновить ссылку на бота
-                    </button>
-                    <button className="btn btn-primary" type="button" onClick={onTelegramTest} disabled={telegramBusy}>
-                      Отправить тест
-                    </button>
+                    <button className="btn btn-ghost" type="button" onClick={fetchBotInfo} disabled={telegramBusy}>Обновить ссылку на бота</button>
+                    <button className="btn btn-primary" type="button" onClick={onTelegramTest} disabled={telegramBusy}>Отправить тест</button>
                   </div>
                   {telegramMsg ? <div className="hint" style={{ marginTop: 8 }}>{telegramMsg}</div> : null}
                 </div>
               </div>
 
-              {/* CloudPub docker-only */}
+
               <div className="card">
-                <div className="cardHead">
-                  <div className="cardTitle">CloudPub / удалённый доступ</div>
-                </div>
+                <div className="cardHead"><div className="cardTitle">CloudPub / удалённый доступ</div></div>
                 <div className="cardBody">
                   <ToggleRow label="Включить CloudPub" checked={!!settings?.cloudpub?.enabled} onChange={(v) => patch("cloudpub.enabled", v)} />
-                  <TextRow
-                    label="origin (host:port)"
-                    value={String(settings?.cloudpub?.server_ip || "")}
-                    placeholder="пусто = gatebox:8080 (рекомендуется). Или 192.168.2.109:8080"
-                    onChange={(v) => patch("cloudpub.server_ip", v)}
-                  />
-                  <TextRow
-                    label="token (access_key)"
-                    value={String(settings?.cloudpub?.access_key || "")}
-                    placeholder="TOKEN из cloudpub"
-                    onChange={(v) => patch("cloudpub.access_key", v)}
-                  />
-                  <SliderRow
-                    label="Auto-expire, мин"
-                    hint="0 = не отключать автоматически"
-                    value={Number(settings?.cloudpub?.auto_expire_min ?? 0)}
-                    min={0}
-                    max={1440}
-                    step={5}
-                    onChange={(v) => patch("cloudpub.auto_expire_min", v)}
-                  />
+                  <TextRow label="Адрес сервера (домен/IP)" value={String(settings?.cloudpub?.server_ip || "")} onChange={(v) => patch("cloudpub.server_ip", v)} />
+                  <TextRow label="Ключ доступа" value={String(settings?.cloudpub?.access_key || "")} onChange={(v) => patch("cloudpub.access_key", v)} />
+                  <SliderRow label="Auto-expire, мин" hint="0 = не отключать автоматически" value={Number(settings?.cloudpub?.auto_expire_min ?? 0)} min={0} max={1440} step={5} onChange={(v) => patch("cloudpub.auto_expire_min", v)} />
                   <div className="row" style={{ gap: 10, flexWrap: "wrap" }}>
-                    <button className="btn btn-ghost" type="button" onClick={fetchCloudpubStatus} disabled={cloudpubBusy}>
-                      Статус
-                    </button>
-                    <button className="btn btn-primary" type="button" onClick={onCloudpubConnect} disabled={cloudpubBusy}>
-                      Подключить / переподключить
-                    </button>
-                    <button className="btn" type="button" onClick={onCloudpubDisconnect} disabled={cloudpubBusy}>
-                      Отключить
-                    </button>
-                    <button className="btn" type="button" onClick={onCloudpubClearAudit} disabled={cloudpubBusy}>
-                      Очистить историю
-                    </button>
+                    <button className="btn btn-ghost" type="button" onClick={fetchCloudpubStatus} disabled={cloudpubBusy}>Статус</button>
+                    <button className="btn btn-primary" type="button" onClick={onCloudpubConnect} disabled={cloudpubBusy}>Подключить / переподключить</button>
+                    <button className="btn" type="button" onClick={onCloudpubDisconnect} disabled={cloudpubBusy}>Отключить</button>
+                    <button className="btn" type="button" onClick={onCloudpubClearAudit} disabled={cloudpubBusy}>Очистить историю</button>
                   </div>
-
                   <div className="hint" style={{ marginTop: 8 }}>
-                    Как подключить: 1) включи CloudPub, 2) укажи token (access_key),
-                    3) Сохранить + Применить, 4) нажми «Подключить / переподключить». (origin можно оставить пустым — будет gatebox:8080)
+                    Как подключить: 1) включи CloudPub, 2) укажи адрес сервера из CloudPub-кабинета/документации, 3) вставь access key,
+                    4) Сохранить + Применить, 5) нажми «Подключить / переподключить».
                   </div>
-
                   <div className="hint" style={{ marginTop: 6 }}>
-                    Документация:{" "}
-                    <a href="https://cloudpub.ru/docs/" target="_blank" rel="noreferrer">
-                      cloudpub.ru/docs
-                    </a>
+                    Документация: <a href="https://cloudpub.ru/docs/" target="_blank" rel="noreferrer">cloudpub.ru/docs</a>
                   </div>
-
                   {cloudpubState ? (
                     <div className="hint" style={{ marginTop: 8 }}>
                       status: {cloudpubStateLabel(cloudpubState)}
@@ -826,53 +645,30 @@ export default function SettingsPage() {
                       {cloudpubState.last_ok_ts ? ` · last_ok=${new Date(Number(cloudpubState.last_ok_ts) * 1000).toLocaleString()}` : ""}
                     </div>
                   ) : null}
-
-                  {cloudpubState ? <div className="hint" style={{ marginTop: 6 }}>{cloudpubHintText(cloudpubState)}</div> : null}
-
+                  {cloudpubState ? (
+                    <div className="hint" style={{ marginTop: 6 }}>{cloudpubHintText(cloudpubState)}</div>
+                  ) : null}
                   {cloudpubState?.public_url ? (
-                    <div className="row" style={{ gap: 10, marginTop: 6, flexWrap: "wrap", alignItems: "center" }}>
-                      <div className="hint">
-                        Публичная ссылка:{" "}
-                        <a href={String(cloudpubState.public_url)} target="_blank" rel="noreferrer">
-                          {String(cloudpubState.public_url)}
-                        </a>
-                      </div>
-                      <button
-                        className="btn btn-ghost"
-                        type="button"
-                        onClick={async () => {
-                          try {
-                            await navigator.clipboard.writeText(String(cloudpubState.public_url));
-                            setCloudpubMsg("✅ Ссылка скопирована в буфер обмена");
-                          } catch {
-                            setCloudpubMsg("❌ Не удалось скопировать ссылку");
-                          }
-                        }}
-                      >
-                        Скопировать
-                      </button>
+                    <div className="hint" style={{ marginTop: 6 }}>
+                      Публичная ссылка: <a href={String(cloudpubState.public_url)} target="_blank" rel="noreferrer">{String(cloudpubState.public_url)}</a>
                     </div>
                   ) : null}
-
+                  {cloudpubState?.management_url ? (
+                    <div className="hint" style={{ marginTop: 6 }}>
+                      Ссылка управления: <a href={String(cloudpubState.management_url)} target="_blank" rel="noreferrer">{String(cloudpubState.management_url)}</a>
+                    </div>
+                  ) : null}
                   {Array.isArray(cloudpubState?.audit) && cloudpubState.audit.length ? (
                     <div className="hint" style={{ marginTop: 6 }}>
-                      Последние действия (автообновление каждые 5 сек):{" "}
-                      {cloudpubState.audit
-                        .slice(0, 5)
-                        .map((a: any) => `${new Date(Number(a.ts || 0) * 1000).toLocaleTimeString()} ${a.action}:${a.ok ? "ok" : "fail"}`)
-                        .join(" · ")}
+                      Последние действия (автообновление каждые 5 сек): {cloudpubState.audit.slice(0, 5).map((a: any) => `${new Date(Number(a.ts || 0) * 1000).toLocaleTimeString()} ${a.action}:${a.ok ? "ok" : "fail"}`).join(" · ")}
                     </div>
                   ) : null}
-
                   {cloudpubMsg ? <div className="hint" style={{ marginTop: 8 }}>{cloudpubMsg}</div> : null}
                 </div>
               </div>
 
-              {/* RTSP worker / live card unchanged */}
               <div className="card">
-                <div className="cardHead">
-                  <div className="cardTitle">RTSP worker / live и отладка</div>
-                </div>
+                <div className="cardHead"><div className="cardTitle">RTSP worker / live и отладка</div></div>
                 <div className="cardBody">
                   <ToggleRow label="LIVE_DRAW_YOLO" checked={Number(ov.LIVE_DRAW_YOLO ?? 1) !== 0} onChange={(v) => patch("rtsp_worker.overrides.LIVE_DRAW_YOLO", v ? 1 : 0)} />
                   <ToggleRow label="LIVE_SAVE_QUAD" checked={Number(ov.LIVE_SAVE_QUAD ?? 1) !== 0} onChange={(v) => patch("rtsp_worker.overrides.LIVE_SAVE_QUAD", v ? 1 : 0)} />
@@ -888,8 +684,8 @@ export default function SettingsPage() {
           ) : null}
 
           <div className="hint muted" style={{ marginTop: 10 }}>
-            Разделение сделано по ролям: <span className="mono">Базовые</span> для ежедневной настройки, <span className="mono"> Продвинутые</span> для тонкого тюнинга и{" "}
-            <span className="mono">Диагностика</span> для логов/live.
+            Разделение сделано по ролям: <span className="mono">Базовые</span> для ежедневной настройки,
+            <span className="mono"> Продвинутые</span> для тонкого тюнинга и <span className="mono">Диагностика</span> для логов/live.
           </div>
         </div>
       </div>

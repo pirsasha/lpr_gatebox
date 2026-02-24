@@ -188,48 +188,46 @@ export default function CameraPage() {
   }
 
   async function onSave() {
-  setSaveState("saving");
-  setSaveError("");
-  setInfo("");
+    setSaveState("saving");
+    setSaveError("");
+    setInfo("");
 
-  try {
-    const fw = Number(boxes?.w || 0);
-    const fh = Number(boxes?.h || 0);
+    try {
+      const fw = Number(boxes?.w || 0);
+      const fh = Number(boxes?.h || 0);
 
-    // дефолт: СБРОС
-    let roiPolyStr = "";
-    let roiStr = "";
+      let roiPolyStr = "";
+      let roiStr = String((await getSettings())?.settings?.rtsp_worker?.overrides?.ROI_STR || "");
 
-    if (roiPts.length >= 3 && fw > 0 && fh > 0) {
-      const ptsFrame = roiPts.map((p) => ({
-        x: Math.max(0, Math.min(fw - 1, Math.round(p.x))),
-        y: Math.max(0, Math.min(fh - 1, Math.round(p.y))),
-      }));
+      if (roiPts.length >= 3 && fw > 0 && fh > 0) {
+        const ptsFrame = roiPts.map((p) => ({
+          x: Math.max(0, Math.min(fw - 1, Math.round(p.x))),
+          y: Math.max(0, Math.min(fh - 1, Math.round(p.y))),
+        }));
 
-      roiPolyStr = pointsToRoiPolyStr(ptsFrame);
+        roiPolyStr = pointsToRoiPolyStr(ptsFrame);
 
-      const xs = ptsFrame.map((p) => p.x);
-      const ys = ptsFrame.map((p) => p.y);
-      const x1 = Math.max(0, Math.min(...xs));
-      const y1 = Math.max(0, Math.min(...ys));
-      const x2 = Math.min(fw, Math.max(...xs) + 1);
-      const y2 = Math.min(fh, Math.max(...ys) + 1);
-      roiStr = `${x1},${y1},${x2},${y2}`;
+        const xs = ptsFrame.map((p) => p.x);
+        const ys = ptsFrame.map((p) => p.y);
+        const x1 = Math.max(0, Math.min(...xs));
+        const y1 = Math.max(0, Math.min(...ys));
+        const x2 = Math.min(fw, Math.max(...xs) + 1);
+        const y2 = Math.min(fh, Math.max(...ys) + 1);
+        roiStr = `${x1},${y1},${x2},${y2}`;
+      }
+
+      await putSettings({
+        camera: { rtsp_url: rtspUrl.trim(), enabled },
+        rtsp_worker: { overrides: { ROI_STR: roiStr, ROI_POLY_STR: roiPolyStr } },
+      });
+
+      setSavedRoiPts(roiPts);
+      setSaveState("saved");
+      setInfo(roiPolyStr ? `Сохранено ✅ Полигон ROI: ${roiPolyStr}` : "Сохранено ✅");
+    } catch (e: any) {
+      setSaveState("error");
+      setSaveError(e?.message ?? "Ошибка сохранения");
     }
-
-    await putSettings({
-      camera: { rtsp_url: rtspUrl.trim(), enabled },
-      rtsp_worker: { overrides: { ROI_STR: roiStr, ROI_POLY_STR: roiPolyStr } },
-    });
-
-    setSavedRoiPts(roiPts);
-    setSaveState("saved");
-    setInfo(roiPolyStr ? `Сохранено ✅ Полигон ROI: ${roiPolyStr}` : "Сохранено ✅ ROI сброшен");
-  } catch (e: any) {
-    setSaveState("error");
-    setSaveError(e?.message ?? "Ошибка сохранения");
-  }
-}
 
   const fw = Number(boxes?.w || 0);
   const fh = Number(boxes?.h || 0);
