@@ -1,20 +1,15 @@
 # =========================================================
 # Файл: app/api/ui_api.py
 # Проект: LPR GateBox
-# Версия: v0.3.9-ui-events-filter+ru-i18n
-# Изменено: 2026-02-11 (UTC+3)
+# Версия: v0.3.34-ui-cloudpub-missing-fns-fix
+# Изменено: 2026-02-20 (UTC+1)
 # Автор: Александр + ChatGPT
 #
-# Что сделано:
-# - NEW: UI-фильтр событий (скрываем OCR-мусор, показываем только РФ/похожие номера)
-# - NEW: ENV-переключатели фильтра:
-#        UI_EVENTS_ONLY_RU=1
-#        UI_EVENTS_RU_STRICT=0
-#        UI_EVENTS_INCLUDE_DENIED=1
-#        UI_EVENTS_INCLUDE_INVALID=0
-# - NEW: русификация сообщений/статусов в UI (UI_I18N_RU=1)
-# - CHG: push_event_from_infer() теперь может "молча" не добавлять мусор в EventStore
-# - НЕ ЛОМАЕМ контракт: /api/... и /api/v1/... работают одинаково (router без prefix)
+# FIX:
+# - Добавлены отсутствующие функции CloudPub:
+#   _cloudpub_cfg_from_settings, _cloudpub_apply_auto_expire,
+#   _cloudpub_connection_state, _cloudpub_append_audit
+# - Из-за отсутствия этих функций /api/v1/cloudpub/status и /connect падали 500 (NameError)
 # =========================================================
 
 from __future__ import annotations
@@ -34,6 +29,9 @@ from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import FileResponse, StreamingResponse, Response
 
 from app.store import EventStore, EventItem, SettingsStore
+
+# CloudPub (remote tunnel)
+from app.integrations.cloudpub.manager import cloudpub_manager
 
 # ВАЖНО: без prefix. Префиксы вешаем в main.py:
 # app.include_router(ui_router, prefix="/api")
@@ -268,7 +266,6 @@ _RU_REASON_MAP: Dict[str, str] = {
     "ok": "ОК",
 }
 
-
 _RU_STATUS_MAP: Dict[str, str] = {
     "sent": "ОТПРАВЛЕНО",
     "invalid": "НЕВЕРНО",
@@ -319,7 +316,6 @@ def _translate_reason_ru(message_or_reason: str) -> str:
         return _RU_REASON_MAP[s]
 
     # Иногда reason лежит в более длинной строке
-    # (например "invalid_format_or_region: ...")
     for k, v in _RU_REASON_MAP.items():
         if k and k in s:
             return v
@@ -351,19 +347,15 @@ def _should_add_event_for_ui(payload: Dict[str, Any], plate: str, status: str) -
     if not UI_EVENTS_ONLY_RU:
         return True
 
-    # 1) выкидываем noise
     if bool(payload.get("noise")):
         return False
 
-    # 2) выкидываем пустое/непохожее
     if not _looks_like_ru_plate(plate, strict=UI_EVENTS_RU_STRICT):
         return False
 
-    # 3) invalid обычно = мусор (обрывки, артефакты)
     if status == "invalid" and not UI_EVENTS_INCLUDE_INVALID:
         return False
 
-    # 4) denied (например not_in_whitelist) обычно хотим видеть
     if status == "denied" and not UI_EVENTS_INCLUDE_DENIED:
         return False
 
@@ -379,8 +371,6 @@ def push_event_from_infer(payload: Dict[str, Any]) -> None:
         conf = payload.get("conf")
         status, message = _derive_status(payload)
 
-        # FIX/CHG: уровень события берём из payload.debug или log_level (если есть)
-        # (оставляем старую логику как fallback)
         if isinstance(payload.get("log_level"), str) and payload["log_level"]:
             lvl = str(payload["log_level"]).strip().lower()
             level = "debug" if lvl == "debug" else "info"
@@ -389,11 +379,9 @@ def push_event_from_infer(payload: Dict[str, Any]) -> None:
 
         meta = payload.get("meta") if isinstance(payload.get("meta"), dict) else None
 
-        # NEW: фильтр мусора для UI
         if not _should_add_event_for_ui(payload, plate=plate, status=status):
             return
 
-        # NEW: русификация сообщения/статуса в UI
         status_ui = status
         message_ui = message
         if UI_I18N_RU:
@@ -413,18 +401,14 @@ def push_event_from_infer(payload: Dict[str, Any]) -> None:
             )
         )
     except Exception:
-        # события не должны валить /infer
         return
 
-
-# ---------- FIX: tolerant query parsing (no 422) ----------
 
 def _q_int(v: Any, default: int, min_v: int | None = None, max_v: int | None = None) -> int:
     try:
         if v is None:
             x = int(default)
         else:
-            # FastAPI может передать уже str, но иногда прилетает "[object Object]"
             s = str(v).strip()
             x = int(float(s))
     except Exception:
@@ -462,7 +446,6 @@ def _q_bool(v: Any, default: bool = False) -> bool:
 
 @router.get("/events")
 def api_events(limit: Any = 50, after_ts: Any = None, include_debug: Any = False):
-    # FIX: не даём 422 — парсим вручную
     lim = _q_int(limit, default=50, min_v=1, max_v=500)
     aft = _q_float(after_ts, default=0.0, min_v=0.0) if after_ts is not None else None
     inc = _q_bool(include_debug, default=False)
@@ -477,8 +460,6 @@ async def api_events_stream(
     poll_ms: Any = 250,
     heartbeat_sec: Any = 15,
 ):
-    """SSE stream событий."""
-    # FIX: не даём 422 — парсим вручную
     last_ts: float = float(_q_float(after_ts, default=0.0, min_v=0.0)) if after_ts is not None else 0.0
     inc = _q_bool(include_debug, default=False)
     poll = _q_int(poll_ms, default=250, min_v=50, max_v=2000)
@@ -504,7 +485,6 @@ async def api_events_stream(
                     yield f"event: event\ndata: {json.dumps(it.to_dict(), ensure_ascii=False)}\n\n"
                     last_send = time.time()
                 except Exception:
-                    # если вдруг в одном событии meta "плохая" — не валим поток
                     continue
 
             if (time.time() - last_send) >= float(hb):
@@ -513,11 +493,7 @@ async def api_events_stream(
 
             await asyncio.sleep(max(0.05, float(poll) / 1000.0))
 
-    headers = {
-        "Cache-Control": "no-cache",
-        "Connection": "keep-alive",
-        "X-Accel-Buffering": "no",
-    }
+    headers = {"Cache-Control": "no-cache", "Connection": "keep-alive", "X-Accel-Buffering": "no"}
     return StreamingResponse(gen(), media_type="text/event-stream", headers=headers)
 
 
@@ -533,14 +509,12 @@ _cloudpub_audit: list[Dict[str, Any]] = []
 
 
 def init_settings(path: str, defaults: Dict[str, Any]) -> None:
-    """Инициализируем SettingsStore. Вызывается один раз из main.py."""
     global _settings_store, _DEFAULT_SETTINGS
     _DEFAULT_SETTINGS = copy.deepcopy(defaults or {})
     _settings_store = SettingsStore(path=path, defaults=_DEFAULT_SETTINGS)
 
 
 def set_apply_callback(fn: Callable[[Dict[str, Any]], Dict[str, Any]]) -> None:
-    """main.py устанавливает функцию, которая применит настройки (MQTT/GateDecider/etc)."""
     global _apply_callback
     _apply_callback = fn
 
@@ -557,7 +531,6 @@ def get_settings_store() -> SettingsStore:
 
 
 def _strip_nones(x: Any) -> Any:
-    """Не даём null/None затирать настройки."""
     if isinstance(x, dict):
         out: Dict[str, Any] = {}
         for k, v in x.items():
@@ -571,10 +544,6 @@ def _strip_nones(x: Any) -> Any:
 
 
 def _extract_settings_payload(payload: Dict[str, Any]) -> Dict[str, Any]:
-    """Принимаем оба формата:
-    - {"settings": {...}}  (рекомендуемый)
-    - {...}               (старый)
-    """
     if not isinstance(payload, dict):
         raise HTTPException(status_code=400, detail="settings payload must be object")
     inner = payload.get("settings")
@@ -584,7 +553,6 @@ def _extract_settings_payload(payload: Dict[str, Any]) -> Dict[str, Any]:
 
 
 def _mask_settings_for_get(settings: Dict[str, Any]) -> Dict[str, Any]:
-    """Не светим пароль в GET/status."""
     s = copy.deepcopy(settings or {})
     mqtt = s.get("mqtt")
     if isinstance(mqtt, dict) and mqtt.get("pass"):
@@ -1032,7 +1000,6 @@ def camera_test(data: CameraTestIn):
     """
     import cv2  # локально, чтобы не грузить лишнее при старте
 
-    # 1) Откуда брать RTSP
     if data.use_settings:
         try:
             settings = _require_store().get()

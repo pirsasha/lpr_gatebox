@@ -1,14 +1,16 @@
 # =========================================================
 # Файл: app/integrations/telegram/client.py
 # Проект: LPR GateBox
-# Версия: v0.3.5.1-tg-style-fix-better-errors
-# Обновлено: 2026-02-13 (UTC+3)
+# Версия: v0.3.5.2-tg-timeouts-tuple-sendphoto (PATCH)
+# Обновлено: 2026-02-19 (UTC+3)
 # Автор: Александр + ChatGPT
 #
 # Что сделано:
-# - FIX: более понятная ошибка Telegram (печатаем description)
+# - NEW: requests timeout теперь tuple (connect, read) по умолчанию
+# - NEW: sendPhoto использует увеличенный таймаут (чтобы не падало на upload/write timeout)
+# - KEEP: более понятная ошибка Telegram (печатаем description)
 # - KEEP: reply_markup + message_thread_id
-# - KEEP: createForumTopic (темы в личке / форум-супергруппа)
+# - KEEP: createForumTopic
 # =========================================================
 
 from __future__ import annotations
@@ -16,16 +18,29 @@ from __future__ import annotations
 import os
 import time
 import json
-from typing import Any, Dict, Optional
+from typing import Any, Dict, Optional, Tuple, Union
 
 import requests
+
+# requests timeout может быть float или (connect_timeout, read_timeout)
+TimeoutT = Union[float, Tuple[float, float]]
 
 
 class TelegramClient:
     def __init__(self, token: str, timeout_sec: float = 12.0):
         self.token = token.strip()
+        # timeout_sec трактуем как "read timeout" по умолчанию (для простых методов)
         self.timeout_sec = float(timeout_sec)
         self.base = f"https://api.telegram.org/bot{self.token}"
+
+        # дефолтные таймауты (пока без настроек из settings):
+        # connect обычно быстрый, read может быть длиннее
+        self._default_connect_timeout = 6.0
+        self._default_read_timeout = float(timeout_sec)
+
+        # отдельный, более жирный таймаут для sendPhoto (upload + обработка)
+        self._photo_connect_timeout = 10.0
+        self._photo_read_timeout = 60.0
 
     @staticmethod
     def _safe_text(s: Optional[str]) -> str:
@@ -40,15 +55,29 @@ class TelegramClient:
             s = str(s)
         return s
 
+    def _resolve_timeout(self, timeout: Optional[TimeoutT]) -> TimeoutT:
+        """
+        timeout:
+          - None -> (default_connect, default_read)
+          - float -> float (как раньше)
+          - tuple(connect, read) -> используем как есть
+        """
+        if timeout is None:
+            return (float(self._default_connect_timeout), float(self._default_read_timeout))
+        if isinstance(timeout, tuple) and len(timeout) == 2:
+            return (float(timeout[0]), float(timeout[1]))
+        # float / int / другие числовые — оставляем совместимость
+        return float(timeout)  # type: ignore[arg-type]
+
     def _post(
         self,
         method: str,
         data: Dict[str, Any],
         files: Optional[Dict[str, Any]] = None,
-        timeout: Optional[float] = None,
+        timeout: Optional[TimeoutT] = None,
     ) -> Dict[str, Any]:
-        t = float(timeout or self.timeout_sec)
         url = f"{self.base}/{method}"
+        t = self._resolve_timeout(timeout)
 
         r = requests.post(url, data=data, files=files, timeout=t)
         try:
@@ -77,7 +106,9 @@ class TelegramClient:
         }
         if offset is not None:
             data["offset"] = int(offset)
-        return self._post("getUpdates", data=data, timeout=float(timeout) + 5.0)
+
+        # long-poll: read_timeout должен быть больше timeout, connect небольшой
+        return self._post("getUpdates", data=data, timeout=(6.0, float(timeout) + 10.0))
 
     def send_message(
         self,
@@ -98,6 +129,8 @@ class TelegramClient:
             data["message_thread_id"] = int(message_thread_id)
         if reply_markup is not None:
             data["reply_markup"] = json.dumps(reply_markup, ensure_ascii=False)
+
+        # дефолтный timeout (connect/read)
         return self._post("sendMessage", data=data)
 
     def send_photo(
@@ -120,9 +153,13 @@ class TelegramClient:
         if reply_markup is not None:
             data["reply_markup"] = json.dumps(reply_markup, ensure_ascii=False)
 
+        # sendPhoto часто падает на "write operation timed out" при upload.
+        # Поэтому даём больше времени именно тут.
+        photo_timeout: TimeoutT = (float(self._photo_connect_timeout), float(self._photo_read_timeout))
+
         with open(photo_path, "rb") as f:
             files = {"photo": f}
-            js = self._post("sendPhoto", data=data, files=files)
+            js = self._post("sendPhoto", data=data, files=files, timeout=photo_timeout)
 
         time.sleep(0.05)
         return js

@@ -43,26 +43,83 @@ def env_bool(name: str, default: bool = False) -> bool:
 
 
 def parse_roi(s: str, w: int, h: int) -> Tuple[int, int, int, int]:
-    """ROI string: 'x1,y1,x2,y2' in full-frame pixels."""
+    """ROI string: 'x1,y1,x2,y2' in full-frame pixels. Empty/zero -> full frame."""
+    if w <= 0 or h <= 0:
+        return (0, 0, 0, 0)
+
     if not s:
         return (0, 0, w, h)
-    parts = [p.strip() for p in s.split(",")]
+
+    parts = [p.strip() for p in str(s).split(",")]
     if len(parts) != 4:
         return (0, 0, w, h)
+
     try:
         x1, y1, x2, y2 = [int(float(p)) for p in parts]
     except Exception:
         return (0, 0, w, h)
 
+    # treat "zero roi" as full-frame (common reset value)
+    if x1 == 0 and y1 == 0 and x2 == 0 and y2 == 0:
+        return (0, 0, w, h)
+
+    # clamp
     x1 = max(0, min(w - 1, x1))
     x2 = max(1, min(w, x2))
     y1 = max(0, min(h - 1, y1))
     y2 = max(1, min(h, y2))
-    if x2 <= x1:
-        x2 = min(w, x1 + 1)
-    if y2 <= y1:
-        y2 = min(h, y1 + 1)
+
+    # if invalid after clamp -> full-frame (not 1x1)
+    if x2 <= x1 or y2 <= y1:
+        return (0, 0, w, h)
+
     return (x1, y1, x2, y2)
+
+def parse_roi_poly_str(s: str, w: int, h: int) -> List[Tuple[int, int]]:
+    """ROI polygon string: 'x1,y1;x2,y2;...'. Returns clipped frame points."""
+    if not s:
+        return []
+    pts: List[Tuple[int, int]] = []
+    for raw in str(s).split(";"):
+        p = raw.strip()
+        if not p:
+            continue
+        xy = [x.strip() for x in p.split(",")]
+        if len(xy) != 2:
+            continue
+        try:
+            x = int(float(xy[0]))
+            y = int(float(xy[1]))
+        except Exception:
+            continue
+        x = max(0, min(w - 1, x))
+        y = max(0, min(h - 1, y))
+        pts.append((x, y))
+
+    # минимум 3 точки для полигона
+    if len(pts) < 3:
+        return []
+    return pts
+
+
+def point_in_polygon(x: float, y: float, poly: List[Tuple[int, int]]) -> bool:
+    """Ray casting point-in-polygon. poly in frame px."""
+    n = len(poly)
+    if n < 3:
+        return True
+
+    inside = False
+    j = n - 1
+    for i in range(n):
+        xi, yi = poly[i]
+        xj, yj = poly[j]
+        intersects = ((yi > y) != (yj > y)) and (
+            x < (xj - xi) * (y - yi) / (float(yj - yi) + 1e-9) + xi
+        )
+        if intersects:
+            inside = not inside
+        j = i
+    return inside
 
 
 def parse_roi_poly_str(s: str, w: int, h: int) -> List[Tuple[int, int]]:
