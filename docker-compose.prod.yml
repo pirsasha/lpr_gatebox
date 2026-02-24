@@ -1,3 +1,11 @@
+# =========================================================
+# LPR GateBox — docker-compose.prod.yml (PROD)
+# FIX (CloudPub docker-mode):
+# - пробрасываем docker.sock в gatebox (в /run/docker.sock)
+# - задаём DOCKER_HOST=unix:///run/docker.sock
+#   чтобы внутри gatebox CloudPub мог дергать Docker API
+# =========================================================
+
 services:
   gatebox:
     image: ghcr.io/pirsasha/lpr_gatebox-gatebox:${TAG:-stable}
@@ -11,6 +19,9 @@ services:
     environment:
       APP_VERSION: "${TAG:-stable}"
       PYTHONUNBUFFERED: "1"
+
+      # ✅ CloudPub (docker mode) inside gatebox
+      DOCKER_HOST: "unix:///run/docker.sock"
 
       DEBUG_LOG: "${DEBUG_LOG:-1}"
       PRINT_EVERY_RESPONSE: "${PRINT_EVERY_RESPONSE:-0}"
@@ -60,6 +71,8 @@ services:
     volumes:
       - ./models:/models:ro
       - ./config:/config
+      # ✅ docker.sock внутрь gatebox (важно для CloudPub docker-mode)
+      - /var/run/docker.sock:/run/docker.sock
 
     healthcheck:
       test: ["CMD","python","-c","import urllib.request; urllib.request.urlopen('http://127.0.0.1:8080/api/v1/health', timeout=2).read(); print('ok')"]

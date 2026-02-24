@@ -56,7 +56,7 @@ services:
       APP_VERSION: "0.1"
       GIT_SHA: "dev"
       BUILD_TIME: "2026-02-07T00:00:00+03:00"
-
+      CLOUDPUB_SIMULATION: "0"
       # Python сразу печатает логи (без буферов)
       PYTHONUNBUFFERED: "1"
 
@@ -107,6 +107,10 @@ services:
       UI_EVENTS_INCLUDE_INVALID: "0"    # invalid скрываем (мусор)
       UI_I18N_RU: "1"                   # русские статусы/сообщения
 
+      HOME: /tmp
+      XDG_CACHE_HOME: /tmp/.cache
+      XDG_STATE_HOME: /tmp/.local/state
+      XDG_CONFIG_HOME: /tmp/.config
       # ---------------- Telegram ----------------
       TELEGRAM_BOT_TOKEN: "${TELEGRAM_BOT_TOKEN:-}"
 
@@ -117,6 +121,7 @@ services:
     volumes:
       - ./models:/models:ro
       - ./config:/config
+      - /var/run/docker.sock:/var/run/docker.sock
 
     healthcheck:
       test:
@@ -210,7 +215,7 @@ services:
       DET_MODEL_PATH: "/models/license-plate-finetune-v1s.pt"
       DET_CONF: "0.35"
       DET_IOU: "0.45"
-      DET_IMG_SIZE: "416"
+      DET_IMG_SIZE: "960"
 
       # ---------------- Crop ----------------
       # legacy (оставляем для совместимости)

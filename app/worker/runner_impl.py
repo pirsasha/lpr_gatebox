@@ -686,7 +686,7 @@ def main() -> None:
             if flags.get("detector_rebuild"):
                 try:
                     print("[rtsp_worker] CHG: runtime overrides -> rebuilding detector")
-                    detector = PlateDetector(DET_MODEL_PATH, conf=DET_CONF, iou=DET_IOU, imgsz=DET_IMG_SIZE)
+                    detector = PlateDetector(DET_MODEL_PATH, conf=DET_CONF, iou_thr=DET_IOU, imgsz=DET_IMG_SIZE)
                 except Exception as e:
                     print(f"[rtsp_worker] WARN: detector rebuild failed: {e}")
 

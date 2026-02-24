@@ -1020,7 +1020,46 @@ async def infer(
 
     return payload
 
+# -------------------------
+# FIX: CloudPub truncates static assets (ERR_CONTENT_LENGTH_MISMATCH)
+# Serve /assets/* as chunked streaming (no Content-Length)
+# -------------------------
+from starlette.responses import StreamingResponse
 
+ASSETS_DIR = Path(os.environ.get("STATIC_DIR", "/app/app/static")) / "assets"
+ASSETS_DIR = ASSETS_DIR.resolve()
+
+@app.get("/assets/{asset_path:path}")
+def ui_assets_stream(asset_path: str):
+    p = (ASSETS_DIR / asset_path).resolve()
+    if not str(p).startswith(str(ASSETS_DIR)) or (not p.exists()) or (not p.is_file()):
+        raise HTTPException(status_code=404)
+
+    def gen():
+        with p.open("rb") as f:
+            while True:
+                chunk = f.read(1024 * 256)
+                if not chunk:
+                    break
+                yield chunk
+
+    suf = p.suffix.lower()
+    if suf == ".js":
+        mt = "application/javascript"
+    elif suf == ".css":
+        mt = "text/css"
+    elif suf == ".map":
+        mt = "application/json"
+    elif suf == ".svg":
+        mt = "image/svg+xml"
+    else:
+        mt = "application/octet-stream"
+
+    resp = StreamingResponse(gen(), media_type=mt)
+    resp.headers["Cache-Control"] = "public, max-age=3600, no-transform"
+    resp.headers["Accept-Ranges"] = "none"
+    resp.headers["X-LPR-Assets-Stream"] = "1"
+    return resp
 # -------------------------
 # UI (static build)
 # -------------------------

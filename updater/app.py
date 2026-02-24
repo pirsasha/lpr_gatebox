@@ -577,6 +577,9 @@ def ensure_effective_compose_file() -> str:
                 or token.startswith(".:")
                 or token.startswith(PROJECT_DIR)
                 or token.startswith(CONFIG_DIR)
+                or token.startswith("/var/run/docker.sock")
+                or token.startswith("/run/docker.sock")
+                or ("docker.sock" in token)
                 or _is_windows_abs_path(token)
             )
             if is_bind_candidate:
