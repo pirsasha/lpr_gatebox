@@ -29,6 +29,7 @@ from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import FileResponse, StreamingResponse, Response
 
 from app.store import EventStore, EventItem, SettingsStore
+from app.core.settings_v2 import migrate_to_v2, effective_config, backup_file
 
 # CloudPub (remote tunnel)
 from app.integrations.cloudpub.manager import cloudpub_manager
@@ -512,6 +513,14 @@ def init_settings(path: str, defaults: Dict[str, Any]) -> None:
     global _settings_store, _DEFAULT_SETTINGS
     _DEFAULT_SETTINGS = copy.deepcopy(defaults or {})
     _settings_store = SettingsStore(path=path, defaults=_DEFAULT_SETTINGS)
+    cur = _settings_store.get()
+    migrated, changed, _notes = migrate_to_v2(cur)
+    if changed:
+        try:
+            backup_file(path)
+        except Exception:
+            pass
+        _settings_store.update(migrated)
 
 
 def set_apply_callback(fn: Callable[[Dict[str, Any]], Dict[str, Any]]) -> None:
@@ -719,8 +728,22 @@ def api_apply_settings():
     if _apply_callback is None:
         raise HTTPException(status_code=500, detail="apply_callback is not set (main.py should call set_apply_callback)")
 
+    rev = int(data.get("revision") or 1) + 1
+    data = st.update({"revision": rev})
     applied = _apply_callback(data)
-    return {"ok": True, "applied": applied, "settings": _mask_settings_for_get(data)}
+    return {"ok": True, "applied": applied, "revision": rev, "settings": _mask_settings_for_get(data)}
+
+
+@router.get("/config/effective")
+def api_config_effective():
+    st = _require_store()
+    data = st.get()
+    return {"ok": True, **effective_config(data)}
+
+
+@router.post("/config/apply")
+def api_config_apply():
+    return api_apply_settings()
 
 
 # =========================
