@@ -71,6 +71,7 @@ from app.core.config_resolve import (
     get_str_src,
     describe_secret,
 )
+from app.core.settings_v2 import default_settings_v2, effective_config
 
 # quad/warp (best-effort внутри gatebox)
 # ВАЖНО: это отдельный путь от твоего refiner-а в rtsp_worker.
@@ -193,47 +194,35 @@ def _save_recent_plate_crop(img_bgr: np.ndarray, payload: Dict[str, Any]) -> Non
     except Exception:
         pass
 
-DEFAULT_SETTINGS: Dict[str, Any] = {
-    "mqtt": {
-        "enabled": ENV_MQTT_ENABLED,
-        "host": ENV_MQTT_HOST,
-        "port": ENV_MQTT_PORT,
-        "user": ENV_MQTT_USER,
-        "pass": ENV_MQTT_PASS,
-        "topic": ENV_MQTT_TOPIC,
-    },
-    "gate": {
-        "min_conf": ENV_MIN_CONF,
-        "confirm_n": ENV_CONFIRM_N,
-        "confirm_window_sec": ENV_CONFIRM_WINDOW_SEC,
-        "cooldown_sec": ENV_COOLDOWN_SEC,
-        "whitelist_path": ENV_WHITELIST_PATH,
-        "region_check": ENV_REGION_CHECK,
-        "region_stab": ENV_REGION_STAB,
-        "region_stab_window_sec": ENV_REGION_STAB_WINDOW_SEC,
-        "region_stab_min_hits": ENV_REGION_STAB_MIN_HITS,
-        "region_stab_min_ratio": ENV_REGION_STAB_MIN_RATIO,
-    },
-    "ui": {
-        "events_max": int(os.environ.get("EVENTS_MAX", "200")),
-    },
-    "telegram": {
-        "enabled": False,
-        "chat_id": None,
-        "thread_id": None,
-        "send_photo": True,
-        "photo_kind": "frame",   # frame | plate (plate best-effort)
-        "include_conf": True,
-        "rate_limit_sec": 2.0,
-        "pair_code": None,       # если захочешь защиту: "1234"
-    },
-    "cloudpub": {
-        "enabled": False,
-        "server_ip": "",
-        "access_key": "",
-        "auto_expire_min": 0,
-    },
+DEFAULT_SETTINGS: Dict[str, Any] = default_settings_v2()
+DEFAULT_SETTINGS["system"]["mqtt"] = {
+    "enabled": ENV_MQTT_ENABLED,
+    "host": ENV_MQTT_HOST,
+    "port": ENV_MQTT_PORT,
+    "user": ENV_MQTT_USER,
+    "pass": ENV_MQTT_PASS,
+    "topic": ENV_MQTT_TOPIC,
 }
+DEFAULT_SETTINGS["system"]["paths"] = {
+    "model_path": MODEL_PATH,
+    "settings_path": SETTINGS_PATH,
+    "infer_url": os.environ.get("INFER_URL", "http://gatebox:8080/infer"),
+    "capture_backend": os.environ.get("CAPTURE_BACKEND", "auto"),
+    "save_dir": os.environ.get("SAVE_DIR", "/debug"),
+}
+DEFAULT_SETTINGS["profiles"]["day"]["gate"].update({
+    "min_conf": ENV_MIN_CONF,
+    "confirm_n": ENV_CONFIRM_N,
+    "confirm_window_sec": ENV_CONFIRM_WINDOW_SEC,
+    "cooldown_sec": ENV_COOLDOWN_SEC,
+    "whitelist_path": ENV_WHITELIST_PATH,
+    "region_check": ENV_REGION_CHECK,
+    "region_stab": ENV_REGION_STAB,
+    "region_stab_window_sec": ENV_REGION_STAB_WINDOW_SEC,
+    "region_stab_min_hits": ENV_REGION_STAB_MIN_HITS,
+    "region_stab_min_ratio": ENV_REGION_STAB_MIN_RATIO,
+})
+
 
 
 # =========================
@@ -383,28 +372,34 @@ def apply_settings(settings: Dict[str, Any]) -> Dict[str, Any]:
     """
     applied: Dict[str, Any] = {}
     cfg = settings if isinstance(settings, dict) else {}
+    eff_bundle = effective_config(cfg)
+    eff = eff_bundle.get("effective") if isinstance(eff_bundle, dict) else {}
+    eff = eff if isinstance(eff, dict) else {}
+    gate_cfg = eff.get("gate") if isinstance(eff.get("gate"), dict) else {}
+    system_cfg = eff.get("system") if isinstance(eff.get("system"), dict) else {}
+    mqtt_cfg = system_cfg.get("mqtt") if isinstance(system_cfg.get("mqtt"), dict) else {}
 
-    # --- GATE (cfg -> env -> default) ---
-    decider.min_conf = get_float(cfg, "gate.min_conf", "MIN_CONF", 0.80)
-    decider.confirm_n = get_int(cfg, "gate.confirm_n", "CONFIRM_N", 2)
-    decider.window_sec = get_float(cfg, "gate.confirm_window_sec", "CONFIRM_WINDOW_SEC", 6.0)
-    decider.cooldown_sec = get_float(cfg, "gate.cooldown_sec", "COOLDOWN_SEC", 15.0)
+    # --- GATE (runtime tuning: settings.json only, ENV тюнинг игнорируется) ---
+    decider.min_conf = float(gate_cfg.get("min_conf", 0.80))
+    decider.confirm_n = int(gate_cfg.get("confirm_n", 2))
+    decider.window_sec = float(gate_cfg.get("confirm_window_sec", 6.0))
+    decider.cooldown_sec = float(gate_cfg.get("cooldown_sec", 15.0))
 
-    new_whitelist = get_str(cfg, "gate.whitelist_path", "WHITELIST_PATH", "/config/whitelist.json")
+    new_whitelist = str(gate_cfg.get("whitelist_path") or os.environ.get("WHITELIST_PATH", "/config/whitelist.json"))
     if new_whitelist != getattr(decider, "whitelist_path", ""):
         decider.whitelist_path = new_whitelist
         decider.reload_whitelist()
 
     if hasattr(decider, "region_check"):
-        decider.region_check = get_bool(cfg, "gate.region_check", "REGION_CHECK", True)
+        decider.region_check = bool(gate_cfg.get("region_check", True))
     if hasattr(decider, "region_stab"):
-        decider.region_stab = get_bool(cfg, "gate.region_stab", "REGION_STAB", True)
+        decider.region_stab = bool(gate_cfg.get("region_stab", True))
     if hasattr(decider, "region_stab_window_sec"):
-        decider.region_stab_window_sec = get_float(cfg, "gate.region_stab_window_sec", "REGION_STAB_WINDOW_SEC", 2.5)
+        decider.region_stab_window_sec = float(gate_cfg.get("region_stab_window_sec", 2.5))
     if hasattr(decider, "region_stab_min_hits"):
-        decider.region_stab_min_hits = get_int(cfg, "gate.region_stab_min_hits", "REGION_STAB_MIN_HITS", 3)
+        decider.region_stab_min_hits = int(gate_cfg.get("region_stab_min_hits", 3))
     if hasattr(decider, "region_stab_min_ratio"):
-        decider.region_stab_min_ratio = get_float(cfg, "gate.region_stab_min_ratio", "REGION_STAB_MIN_RATIO", 0.60)
+        decider.region_stab_min_ratio = float(gate_cfg.get("region_stab_min_ratio", 0.60))
 
     applied["gate"] = {
         "min_conf": decider.min_conf,
@@ -421,12 +416,12 @@ def apply_settings(settings: Dict[str, Any]) -> Dict[str, Any]:
 
     # --- MQTT (cfg -> env -> default) ---
     new_cfg = {
-        "enabled": get_bool(cfg, "mqtt.enabled", "MQTT_ENABLED", True),
-        "host": get_str(cfg, "mqtt.host", "MQTT_HOST", "192.168.1.10"),
-        "port": get_int(cfg, "mqtt.port", "MQTT_PORT", 1883),
-        "user": get_str(cfg, "mqtt.user", "MQTT_USER", ""),
-        "pass": get_str(cfg, "mqtt.pass", "MQTT_PASS", ""),
-        "topic": get_str(cfg, "mqtt.topic", "MQTT_TOPIC", "gate/open"),
+        "enabled": bool(mqtt_cfg.get("enabled", True)),
+        "host": str(mqtt_cfg.get("host") or "192.168.1.10"),
+        "port": int(mqtt_cfg.get("port") or 1883),
+        "user": str(mqtt_cfg.get("user") or ""),
+        "pass": str(mqtt_cfg.get("pass") or ""),
+        "topic": str(mqtt_cfg.get("topic") or "gate/open"),
     }
 
     changed = new_cfg != _mqtt_cfg

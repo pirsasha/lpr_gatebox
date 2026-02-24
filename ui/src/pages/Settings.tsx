@@ -465,6 +465,11 @@ export default function SettingsPage() {
             <button className={`btn ${section === "diagnostics" ? "btn-primary" : "btn-ghost"}`} type="button" onClick={() => setSection("diagnostics")}>Диагностика</button>
           </div>
           <div className="row">
+            <button className={`btn ${section === "basic" ? "btn-primary" : "btn-ghost"}`} type="button" onClick={() => setSection("basic")}>Базовые</button>
+            <button className={`btn ${section === "advanced" ? "btn-primary" : "btn-ghost"}`} type="button" onClick={() => setSection("advanced")}>Продвинутые</button>
+            <button className={`btn ${section === "diagnostics" ? "btn-primary" : "btn-ghost"}`} type="button" onClick={() => setSection("diagnostics")}>Диагностика</button>
+          </div>
+          <div className="row">
             <button className="btn btn-ghost" type="button" onClick={load}>
               Обновить
             </button>
