@@ -169,53 +169,6 @@ def point_in_polygon(x: float, y: float, poly: List[Tuple[int, int]]) -> bool:
     return inside
 
 
-def parse_roi_poly_str(s: str, w: int, h: int) -> List[Tuple[int, int]]:
-    """ROI polygon string: 'x1,y1;x2,y2;...'. Returns clipped frame points."""
-    if not s:
-        return []
-    pts: List[Tuple[int, int]] = []
-    for raw in str(s).split(";"):
-        p = raw.strip()
-        if not p:
-            continue
-        xy = [x.strip() for x in p.split(",")]
-        if len(xy) != 2:
-            continue
-        try:
-            x = int(float(xy[0]))
-            y = int(float(xy[1]))
-        except Exception:
-            continue
-        x = max(0, min(w - 1, x))
-        y = max(0, min(h - 1, y))
-        pts.append((x, y))
-
-    # минимум 3 точки для полигона
-    if len(pts) < 3:
-        return []
-    return pts
-
-
-def point_in_polygon(x: float, y: float, poly: List[Tuple[int, int]]) -> bool:
-    """Ray casting point-in-polygon. poly in frame px."""
-    n = len(poly)
-    if n < 3:
-        return True
-
-    inside = False
-    j = n - 1
-    for i in range(n):
-        xi, yi = poly[i]
-        xj, yj = poly[j]
-        intersects = ((yi > y) != (yj > y)) and (
-            x < (xj - xi) * (y - yi) / (float(yj - yi) + 1e-9) + xi
-        )
-        if intersects:
-            inside = not inside
-        j = i
-    return inside
-
-
 def expand_box(x1: int, y1: int, x2: int, y2: int, pad: float, w: int, h: int) -> Tuple[int, int, int, int]:
     bw = max(1, x2 - x1)
     bh = max(1, y2 - y1)
