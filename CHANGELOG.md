@@ -1,15 +1,5 @@
 # Changelog
 
-## v0.4.0 — 2026-02-24
-### Added
-- settings.json v2 foundation: profiles (`day/night/custom`), `active_profile`, `revision`, and system split.
-- New config APIs: `GET /api/v1/config/effective` and `POST /api/v1/config/apply`.
-- v1->v2 runtime migration with backup on first load.
-- Schema draft: `config/settings.schema.v2.json` and rollout doc `docs/settings-v2-rollout-ru.md`.
-
-### Changed
-- Runtime gate tuning now reads from effective settings profile (single source of truth), while tuning ENV vars are treated as deprecated/ignored.
-
 ## v0.3.26 — 2026-02-18
 ### Changed
 - gatebox runtime config now follows unified priority: `settings.json` (cfg) -> ENV fallback -> default.
