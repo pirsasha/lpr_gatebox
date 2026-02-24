@@ -1,0 +1,55 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://lpr-gatebox.local/settings.v2.schema.json",
+  "title": "LPR GateBox settings.json v2",
+  "type": "object",
+  "required": ["version", "revision", "active_profile", "profiles", "system", "camera"],
+  "properties": {
+    "version": {"type": "integer", "const": 2},
+    "revision": {"type": "integer", "minimum": 1},
+    "active_profile": {"type": "string", "enum": ["day", "night", "custom"]},
+    "profiles": {
+      "type": "object",
+      "required": ["day", "night", "custom"],
+      "properties": {
+        "day": {"$ref": "#/$defs/profile"},
+        "night": {"$ref": "#/$defs/profile"},
+        "custom": {"$ref": "#/$defs/profile"}
+      },
+      "additionalProperties": false
+    },
+    "camera": {
+      "type": "object",
+      "properties": {
+        "enabled": {"type": "boolean"},
+        "rtsp_url": {"type": "string"},
+        "roi": {"type": "string"},
+        "roi_poly": {"type": "string"}
+      },
+      "additionalProperties": true
+    },
+    "system": {
+      "type": "object",
+      "properties": {
+        "mqtt": {"type": "object"},
+        "telegram": {"type": "object"},
+        "cloudpub": {"type": "object"},
+        "paths": {"type": "object"}
+      },
+      "additionalProperties": true
+    },
+    "ui": {"type": "object"}
+  },
+  "$defs": {
+    "profile": {
+      "type": "object",
+      "properties": {
+        "gate": {"type": "object"},
+        "ocr": {"type": "object"},
+        "rtsp_worker": {"type": "object"}
+      },
+      "additionalProperties": true
+    }
+  },
+  "additionalProperties": true
+}
