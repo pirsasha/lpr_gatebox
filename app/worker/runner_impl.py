@@ -9,6 +9,7 @@
 # - FIX: auto day/night метрики считаем по ROI сцены (AUTO_METRICS_SOURCE=roi|crop)
 # - NEW: deskew (DESKEW_ENABLE) — лёгкий поворот по горизонту номера для OCR
 # - CHG: deskew_* добавлен в pre_timing (meta в gatebox)
+# - CHG: добавлена диагностика причин pre-sanity reject (`sanity_fail_reason`)
 # - ВАЖНО: остальной пайплайн сохранён (settings poll, tracking, freeze, live, debug)
 # =========================================================
 
@@ -21,7 +22,7 @@ from typing import Dict, List, Optional, Tuple
 import cv2
 import numpy as np
 
-from app.worker.settings import env_bool, env_float, env_int, env_str, parse_roi, expand_box
+from app.worker.settings import env_bool, env_float, env_int, env_str, parse_roi, parse_roi_poly_str, point_in_polygon, expand_box
 from app.worker.forensics import ensure_dir, atomic_write_bytes, atomic_write_json
 from app.worker.http_client import infer_base_url as _infer_base_url
 from app.worker.http_client import post_heartbeat as _post_heartbeat
@@ -135,6 +136,10 @@ _OVERRIDABLE: dict[str, tuple[str, callable]] = {
     "SAVE_FULL_FRAME": ("bool", lambda v: bool(int(v)) if isinstance(v, (int, str)) else bool(v)),
     "SAVE_WITH_ROI": ("bool", lambda v: bool(int(v)) if isinstance(v, (int, str)) else bool(v)),
     "LOG_EVERY_SEC": ("float", float),
+
+    # ROI (scene crop)
+    "ROI_STR": ("str", str),
+    "ROI_POLY_STR": ("str", str),
 }
 
 _REQUIRES_REBUILD_DETECTOR = {"DET_CONF", "DET_IOU", "DET_IMG_SIZE"}
@@ -206,6 +211,7 @@ def _apply_runtime_overrides(overrides: dict | None, last: dict) -> tuple[dict, 
 
 # ROI
 ROI_STR = env_str("ROI_STR", env_str("ROI", ""))
+ROI_POLY_STR = env_str("ROI_POLY_STR", "")
 
 OCR_CROP_MODE = env_str("OCR_CROP_MODE", "yolo").lower()
 SEND_ON_NO_DET = env_bool("SEND_ON_NO_DET", False)
@@ -343,17 +349,22 @@ def rectify_plate(crop_bgr: np.ndarray, out_w: int, out_h: int) -> Optional[np.n
     return warped
 
 
-def is_sane_crop(img: np.ndarray) -> bool:
+def sanity_check_crop(img: np.ndarray) -> tuple[bool, str]:
     try:
         hh, ww = img.shape[:2]
     except Exception:
-        return False
+        return False, "invalid_shape"
+
     if ww < int(MIN_PLATE_W) or hh < int(MIN_PLATE_H):
-        return False
+        return False, f"too_small:{ww}x{hh}<min{int(MIN_PLATE_W)}x{int(MIN_PLATE_H)}"
+
     ar = float(ww) / float(max(1, hh))
-    if ar < 1.8 or ar > 8.0:
-        return False
-    return True
+    if ar < 1.8:
+        return False, f"bad_aspect_low:{ar:.3f}<1.8"
+    if ar > 8.0:
+        return False, f"bad_aspect_high:{ar:.3f}>8.0"
+
+    return True, "ok"
 
 
 def maybe_upscale(img: np.ndarray, min_w: int, min_h: int, enable: bool) -> np.ndarray:
@@ -554,10 +565,13 @@ def main() -> None:
     w = 0
     h = 0
     roi = (0, 0, 0, 0)
+    last_roi_str = str(ROI_STR or "")
+    last_roi_poly_str = str(ROI_POLY_STR or "")
     if frame0 is not None:
         h, w = frame0.shape[:2]
-        roi = parse_roi(ROI_STR, w, h)  # <- ВАЖНО: так и должно быть
-        print(f"[rtsp_worker] first frame={w}x{h} ROI={roi}")
+        roi = parse_roi(last_roi_str, w, h)  # <- ROI from runtime settings/env
+        roi_poly = parse_roi_poly_str(last_roi_poly_str, w, h)
+        print(f"[rtsp_worker] first frame={w}x{h} ROI={roi} ROI_POLY_PTS={len(roi_poly)}")
 
     track = TrackState(track_id=0, last_seen_ts=0.0, box=None)
     events = PlateEventState(
@@ -602,6 +616,9 @@ def main() -> None:
     auto_profile: Optional[str] = None
     auto_metrics: Dict[str, float] = {}
 
+    runtime_overrides_last: dict = {}
+    roi_poly: List[Tuple[int, int]] = parse_roi_poly_str(str(ROI_POLY_STR or ""), max(1, w), max(1, h)) if (w > 0 and h > 0) else []
+
     while True:
         now = time.time()
 
@@ -620,7 +637,7 @@ def main() -> None:
                     # settings.rtsp_worker.overrides = {"DET_CONF": 0.35, "READ_FPS": 15, ...}
                     
                     overrides = _get_settings_overrides(s_all)
-                    flags = _apply_runtime_overrides(overrides)
+                    runtime_overrides_last, flags = _apply_runtime_overrides(overrides, runtime_overrides_last)
             except Exception:
                 # settings poll не должен ломать основной цикл
                 pass
@@ -672,6 +689,22 @@ def main() -> None:
                     detector = PlateDetector(DET_MODEL_PATH, conf=DET_CONF, iou=DET_IOU, imgsz=DET_IMG_SIZE)
                 except Exception as e:
                     print(f"[rtsp_worker] WARN: detector rebuild failed: {e}")
+
+            # ROI can be changed from settings at runtime without restart
+            cur_roi_str = str(globals().get("ROI_STR", "") or "")
+            if cur_roi_str != last_roi_str:
+                last_roi_str = cur_roi_str
+                if w > 0 and h > 0:
+                    roi = parse_roi(last_roi_str, w, h)
+                print(f"[rtsp_worker] CHG: ROI_STR -> {last_roi_str!r} ROI={roi}")
+
+            cur_roi_poly_str = str(globals().get("ROI_POLY_STR", "") or "")
+            if cur_roi_poly_str != last_roi_poly_str:
+                last_roi_poly_str = cur_roi_poly_str
+                if w > 0 and h > 0:
+                    roi_poly = parse_roi_poly_str(last_roi_poly_str, w, h)
+                print(f"[rtsp_worker] CHG: ROI_POLY_STR -> pts={len(roi_poly)}")
+
 
         # disabled -> heartbeat only
         if not current_enabled or grabber is None:
@@ -726,8 +759,9 @@ def main() -> None:
         fh, fw = frame.shape[:2]
         if (fw, fh) != (w, h) or w == 0 or h == 0:
             w, h = fw, fh
-            roi = parse_roi(ROI_STR, w, h)
-            print(f"[rtsp_worker] stream size => frame={w}x{h} ROI={roi}")
+            roi = parse_roi(last_roi_str, w, h)
+            roi_poly = parse_roi_poly_str(str(globals().get("ROI_POLY_STR", "") or ""), w, h)
+            print(f"[rtsp_worker] stream size => frame={w}x{h} ROI={roi} ROI_POLY_PTS={len(roi_poly)}")
 
         x1, y1, x2, y2 = roi
         roi_frame = frame[y1:y2, x1:x2]
@@ -795,6 +829,13 @@ def main() -> None:
         if best_full is None and track.box is not None and (now - track.last_seen_ts) <= TRACK_HOLD_SEC:
             best_full = track.box
 
+        # polygon ROI gate (optional): detection center must be inside polygon
+        if best_full is not None and roi_poly:
+            cx = 0.5 * (float(best_full.x1) + float(best_full.x2))
+            cy = 0.5 * (float(best_full.y1) + float(best_full.y2))
+            if not point_in_polygon(cx, cy, roi_poly):
+                best_full = None
+
         # live preview
         if LIVE_EVERY_SEC > 0 and (now - last_live_write) >= LIVE_EVERY_SEC:
             items = []
@@ -834,6 +875,7 @@ def main() -> None:
 
         pre_variant = "none"
         pre_warped = False
+        sanity_fail_reason = "not_applicable"
 
         pad_used_tick = float(PLATE_PAD_BASE)
         pad_reason_tick = "n/a"
@@ -948,10 +990,13 @@ def main() -> None:
                 pre_warped = False
 
         if crop_to_send is not None and crop_to_send.size > 0:
-            if not is_sane_crop(crop_to_send):
+            sanity_ok_tick, sanity_fail_reason = sanity_check_crop(crop_to_send)
+            if not sanity_ok_tick:
                 crop_to_send = None
                 pre_variant = "rejected_unsane"
                 pre_warped = False
+        else:
+            sanity_fail_reason = "no_candidate_crop"
 
         # APPLY PREPROC
         if crop_to_send is not None and crop_to_send.size > 0:
@@ -1156,6 +1201,7 @@ def main() -> None:
                     "pre_variant": str(pre_variant),
                     "pre_warped": bool(pre_warped),
                     "sanity_ok": bool(crop_to_send is not None and crop_to_send.size > 0),
+                    "sanity_fail_reason": str(sanity_fail_reason),
                     "auto": {
                         "enabled": bool(auto_cfg.enable),
                         "preproc_enabled": bool(AUTO_PREPROC_ENABLE),
@@ -1185,6 +1231,7 @@ def main() -> None:
                 f"track={trk} track_new={int(track_new)} sent={sent} seen={last_seen} sent_plate={last_sent} "
                 f"grab_age_ms={grab_age_ms:.1f} url={current_rtsp_url} variant={pre_variant} "
                 f"pad_used={last_pad_used:.3f} pad_reason={last_pad_reason} bbox={last_bbox_wh[0]}x{last_bbox_wh[1]} "
+                f"sanity={sanity_fail_reason} "
                 f"auto={int(auto_cfg.enable)} preproc={int(AUTO_PREPROC_ENABLE)} profile={auto_profile} "
                 f"auto_src={AUTO_METRICS_SOURCE} deskew={int(DESKEW_ENABLE)}"
             )

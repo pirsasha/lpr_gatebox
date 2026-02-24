@@ -113,5 +113,11 @@
   },
   "ocr": {
     "postcrop_lrbt": "0.02,0.02,0.05,0.05"
+  },
+  "cloudpub": {
+    "enabled": false,
+    "server_ip": "",
+    "access_key": "",
+    "auto_expire_min": 0
   }
 }
