@@ -228,7 +228,7 @@ export default function CameraPage() {
       setSaveState("error");
       setSaveError(e?.message ?? "Ошибка сохранения");
     }
-
+  }
   const fw = Number(boxes?.w || 0);
   const fh = Number(boxes?.h || 0);
 
