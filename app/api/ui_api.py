@@ -707,6 +707,18 @@ def _classify_rtsp_overrides(settings_patch: Dict[str, Any]) -> Dict[str, list[s
         "unknown": sorted(set(unknown)),
     }
 
+
+@router.get("/rtsp_worker/capabilities")
+def api_rtsp_worker_capabilities():
+    """Source-of-truth for UI: which rtsp_worker.overrides keys are supported and how they apply."""
+    return {
+        "ok": True,
+        "overrides": {
+            "hot_apply": sorted(_RTSP_HOT_OVERRIDES),
+            "restart_required": sorted(_RTSP_RESTART_ONLY_OVERRIDES),
+        },
+    }
+
 def _drop_empty_cloudpub_access_key(patch: Dict[str, Any]) -> Dict[str, Any]:
     """cloudpub.access_key == '' или masked '***' не должны затирать сохранённый ключ."""
     if not isinstance(patch, dict):
