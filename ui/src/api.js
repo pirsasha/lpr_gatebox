@@ -106,6 +106,10 @@ export function getSettings() {
   return apiGet(`${API_V1}/settings`);
 }
 
+export function getRtspWorkerCapabilities() {
+  return apiGet(`${API_V1}/rtsp_worker/capabilities`);
+}
+
 export function putSettings(partial) {
   // backend ждёт { settings: {...} }
   return apiPut(`${API_V1}/settings`, { settings: partial });
