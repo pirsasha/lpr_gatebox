@@ -1,10 +1,13 @@
 # Changelog
 
+<<<<<<< codex/conduct-project-audit-for-errors-and-performance-if9rhn
 ## v0.4.3 — 2026-02-27
 ### Fixed
 - Dashboard mobile overflow: constrained home layout width (`min-width:0`), made recent-plates grid responsive, and wrapped events table in local horizontal scroll to prevent whole-page overflow on narrow screens.
 
 
+=======
+>>>>>>> main
 ## v0.4.2 — 2026-02-27
 ### Changed
 - Mobile navbar/tabs are now responsive: horizontal in-place scroll on screens <=768px with active-tab auto-scroll into view, while desktop layout remains single-line.
@@ -15,6 +18,13 @@
 - Dashboard (home) now renders RTSP preview with YOLO bbox overlay (same live frame + boxes endpoints as camera UI), with responsive layout tuned for desktop/mobile.
 
 
+<<<<<<< codex/conduct-project-audit-for-errors-and-performance-if9rhn
+=======
+<<<<<<< codex/conduct-project-audit-for-errors-and-performance-mkvoee
+=======
+
+>>>>>>> main
+>>>>>>> main
 ## v0.4.0 — 2026-02-27
 ### Added
 - `PUT /api/v1/settings` now includes `overrides_apply` (`applied`, `queued_restart`, `unknown`) to explicitly separate `rtsp_worker.overrides` hot-applied keys vs restart-only keys for UI/operator visibility.
@@ -26,6 +36,13 @@
 - `rtsp_worker` HTTP client switched to pooled `requests.Session` with keep-alive for settings/heartbeat/infer calls, plus bounded timeout normalization to reduce stuck network calls and TCP reconnect overhead.
 
 
+<<<<<<< codex/conduct-project-audit-for-errors-and-performance-if9rhn
+=======
+<<<<<<< codex/conduct-project-audit-for-errors-and-performance-mkvoee
+=======
+
+>>>>>>> main
+>>>>>>> main
 ## v0.3.27 — 2026-02-27
 ### Fixed
 - UI API `/api/v1/camera/test` now enforces `timeout_sec` with fail-fast behavior via executor timeout (returns `{ok:false,error:"timeout"}` instead of hanging request on slow/broken RTSP).
