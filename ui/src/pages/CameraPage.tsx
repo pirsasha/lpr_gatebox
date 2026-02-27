@@ -196,8 +196,9 @@ export default function CameraPage() {
       const fw = Number(boxes?.w || 0);
       const fh = Number(boxes?.h || 0);
 
+      // Единое правило: пустой ROI = пустые строки в settings (без восстановления старого bbox).
       let roiPolyStr = "";
-      let roiStr = String((await getSettings())?.settings?.rtsp_worker?.overrides?.ROI_STR || "");
+      let roiStr = "";
 
       if (roiPts.length >= 3 && fw > 0 && fh > 0) {
         const ptsFrame = roiPts.map((p) => ({
