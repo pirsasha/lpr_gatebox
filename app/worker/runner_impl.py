@@ -279,7 +279,13 @@ LIVE_DIR = env_str("LIVE_DIR", "/config/live")
 LIVE_EVERY_SEC = env_float("LIVE_EVERY_SEC", 1.0)
 LIVE_JPEG_QUALITY = env_int("LIVE_JPEG_QUALITY", 80)
 LIVE_SAVE_QUAD = env_bool("LIVE_SAVE_QUAD", True)
-SANITY_REJECT_DUMP_INTERVAL_SEC = 3.0
+SANITY_ASPECT_MIN_BASE = env_float("SANITY_ASPECT_MIN_BASE", 1.80)
+SANITY_ASPECT_MIN_ADAPTIVE = env_float("SANITY_ASPECT_MIN_ADAPTIVE", 1.60)
+SANITY_ADAPTIVE_CONF_MIN = env_float("SANITY_ADAPTIVE_CONF_MIN", 0.75)
+SANITY_ADAPTIVE_AREA_MIN = env_float("SANITY_ADAPTIVE_AREA_MIN", 0.0065)
+SANITY_MIN_WIDTH_PX = env_int("SANITY_MIN_WIDTH_PX", 140)
+SANITY_MIN_HEIGHT_PX = env_int("SANITY_MIN_HEIGHT_PX", 60)
+SANITY_DEBUG_REJECT_EVERY_SEC = env_float("SANITY_DEBUG_REJECT_EVERY_SEC", 3.0)
 
 # RTSP watchdog/freeze
 RTSP_TRANSPORT = env_str("RTSP_TRANSPORT", "tcp").lower()
@@ -368,12 +374,12 @@ def sanity_check_crop(
     metrics["aspect"] = float(ar)
     metrics["det_conf"] = float(det_conf) if det_conf is not None else -1.0
 
-    if ww < int(MIN_PLATE_W) or hh < int(MIN_PLATE_H):
+    if ww < int(SANITY_MIN_WIDTH_PX) or hh < int(SANITY_MIN_HEIGHT_PX):
         metrics["rule"] = "too_small"
-        return False, f"too_small:{ww}x{hh}<min{int(MIN_PLATE_W)}x{int(MIN_PLATE_H)}", metrics
+        return False, f"too_small:{ww}x{hh}<min{int(SANITY_MIN_WIDTH_PX)}x{int(SANITY_MIN_HEIGHT_PX)}", metrics
 
     # base threshold keeps strict filtering for low-confidence/small detections
-    ar_min = 1.8
+    ar_min = float(SANITY_ASPECT_MIN_BASE)
     rule = "base"
     if det_conf is not None:
         bw, bh = (bbox_wh or (ww, hh))
@@ -384,8 +390,8 @@ def sanity_check_crop(
         metrics["bbox_area_ratio"] = float(bbox_area_ratio)
 
         # Adaptive relax: high-confidence + non-tiny bbox may pass with slightly lower AR
-        if float(det_conf) >= 0.75 and bbox_area_ratio >= 0.008:
-            ar_min = 1.6
+        if float(det_conf) >= float(SANITY_ADAPTIVE_CONF_MIN) and bbox_area_ratio >= float(SANITY_ADAPTIVE_AREA_MIN):
+            ar_min = float(SANITY_ASPECT_MIN_ADAPTIVE)
             rule = "adaptive_high_conf"
 
     metrics["aspect_min"] = float(ar_min)
@@ -1036,7 +1042,7 @@ def main() -> None:
                 pre_variant = "rejected_unsane"
                 pre_warped = False
 
-                if (now - float(last_unsane_dump_ts)) >= float(SANITY_REJECT_DUMP_INTERVAL_SEC):
+                if (now - float(last_unsane_dump_ts)) >= float(SANITY_DEBUG_REJECT_EVERY_SEC):
                     try:
                         stamp = int(now * 1000)
                         vis = frame.copy()
@@ -1290,6 +1296,8 @@ def main() -> None:
                 f"aspect={float(sanity_metrics.get('aspect', -1.0)):.3f} "
                 f"thr={float(sanity_metrics.get('aspect_min', -1.0)):.2f} "
                 f"area={float(sanity_metrics.get('bbox_area_ratio', -1.0)):.4f} "
+                f"w={int(float(sanity_metrics.get('crop_w', -1.0)))} h={int(float(sanity_metrics.get('crop_h', -1.0)))} "
+                f"conf={float(sanity_metrics.get('det_conf', -1.0)):.2f} "
                 f"rule={str(sanity_metrics.get('rule', '-'))} "
                 f"auto={int(auto_cfg.enable)} preproc={int(AUTO_PREPROC_ENABLE)} profile={auto_profile} "
                 f"auto_src={AUTO_METRICS_SOURCE} deskew={int(DESKEW_ENABLE)}"

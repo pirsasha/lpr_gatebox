@@ -1,5 +1,13 @@
 # Changelog
 
+## v0.5.0 — 2026-02-27
+### Added
+- `rtsp_worker` sanity thresholds moved to ENV for runtime tuning without code changes: `SANITY_ASPECT_MIN_BASE`, `SANITY_ASPECT_MIN_ADAPTIVE`, `SANITY_ADAPTIVE_CONF_MIN`, `SANITY_ADAPTIVE_AREA_MIN`, `SANITY_MIN_WIDTH_PX`, `SANITY_MIN_HEIGHT_PX`, `SANITY_DEBUG_REJECT_EVERY_SEC`.
+
+### Changed
+- Alive log now prints extended sanity metrics: `aspect`, `thr`, `area`, `w`, `h`, `conf`, `rule`.
+
+
 ## v0.4.4 — 2026-02-27
 ### Fixed
 - `rtsp_worker` sanity-check for plate crop now uses adaptive lower aspect threshold for high-confidence, non-tiny detections (`1.6` instead of strict `1.8` only in that case), reducing false rejects like `bad_aspect_low` on real plates.
@@ -9,7 +17,6 @@
 ## v0.4.3 — 2026-02-27
 ### Fixed
 - Dashboard mobile overflow: constrained home layout width (`min-width:0`), made recent-plates grid responsive, and wrapped events table in local horizontal scroll to prevent whole-page overflow on narrow screens.
-
 
 
 ## v0.4.2 — 2026-02-27
@@ -22,7 +29,6 @@
 - Dashboard (home) now renders RTSP preview with YOLO bbox overlay (same live frame + boxes endpoints as camera UI), with responsive layout tuned for desktop/mobile.
 
 
-
 ## v0.4.0 — 2026-02-27
 ### Added
 - `PUT /api/v1/settings` now includes `overrides_apply` (`applied`, `queued_restart`, `unknown`) to explicitly separate `rtsp_worker.overrides` hot-applied keys vs restart-only keys for UI/operator visibility.
@@ -32,7 +38,6 @@
 ## v0.3.28 — 2026-02-27
 ### Fixed
 - `rtsp_worker` HTTP client switched to pooled `requests.Session` with keep-alive for settings/heartbeat/infer calls, plus bounded timeout normalization to reduce stuck network calls and TCP reconnect overhead.
-
 
 
 ## v0.3.27 — 2026-02-27
