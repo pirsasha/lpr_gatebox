@@ -11,6 +11,7 @@
 - `rtsp_worker` HTTP client switched to pooled `requests.Session` with keep-alive for settings/heartbeat/infer calls, plus bounded timeout normalization to reduce stuck network calls and TCP reconnect overhead.
 
 
+
 ## v0.3.27 — 2026-02-27
 ### Fixed
 - UI API `/api/v1/camera/test` now enforces `timeout_sec` with fail-fast behavior via executor timeout (returns `{ok:false,error:"timeout"}` instead of hanging request on slow/broken RTSP).
