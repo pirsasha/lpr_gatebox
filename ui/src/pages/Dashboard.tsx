@@ -1,5 +1,5 @@
 import React, { useEffect, useMemo, useState } from "react";
-import { addWhitelistPlate, getRecentPlates, getRtspStatus, rtspBoxes, rtspFrameUrl, rtspSnapshot } from "../api";
+import { addWhitelistPlate, getRecentPlates, getRtspStatus, getSystemHealth, rtspBoxes, rtspFrameUrl, rtspSnapshot } from "../api";
 import { useEventsStream } from "../hooks/useEventsStream";
 
 type RecentPlateItem = {
@@ -35,6 +35,13 @@ type RtspStatus = {
   errors?: number;
 };
 
+type SystemHealth = {
+  gatebox_online?: boolean;
+  worker_online?: boolean;
+  last_heartbeat_age_ms?: number | null;
+  last_error?: string;
+};
+
 function Badge({ tone, children }: { tone: "green" | "red" | "blue" | "gray" | "yellow"; children: React.ReactNode }) {
   const cls =
     tone === "green" ? "badge badge-green" :
@@ -58,6 +65,7 @@ export default function DashboardPage() {
   const [wlInfo, setWlInfo] = useState<string>("");
   const [snapshotBusy, setSnapshotBusy] = useState<boolean>(false);
   const [snapshotUrl, setSnapshotUrl] = useState<string>("");
+  const [sysHealth, setSysHealth] = useState<SystemHealth | null>(null);
 
   const { items: events, connected: sseOnline, error: sseErr } = useEventsStream({ includeDebug: false, limit: 40 });
 
@@ -113,6 +121,15 @@ export default function DashboardPage() {
       } catch (e: any) {
         if (!mounted) return;
         setErr(e?.message || String(e));
+      }
+
+      try {
+        const sh = await getSystemHealth();
+        if (!mounted) return;
+        setSysHealth(sh || null);
+      } catch {
+        if (!mounted) return;
+        setSysHealth(null);
       }
     };
     tick();
@@ -204,12 +221,13 @@ export default function DashboardPage() {
   }, [rtsp]);
 
   const health = useMemo(() => {
-    const gateboxOnline = !err;
-    const workerOnline = !!rtsp?.alive;
-    const hbAge = typeof rtsp?.age_ms === "number" ? `${rtsp.age_ms}мс` : "—";
-    const lastError = err || sseErr || (workerOnline ? "—" : (rtsp?.note || "worker_offline"));
+    const gateboxOnline = typeof sysHealth?.gatebox_online === "boolean" ? !!sysHealth.gatebox_online : !err;
+    const workerOnline = typeof sysHealth?.worker_online === "boolean" ? !!sysHealth.worker_online : !!rtsp?.alive;
+    const hbRaw = (typeof sysHealth?.last_heartbeat_age_ms === "number") ? sysHealth.last_heartbeat_age_ms : rtsp?.age_ms;
+    const hbAge = typeof hbRaw === "number" ? `${hbRaw}мс` : "—";
+    const lastError = err || sseErr || sysHealth?.last_error || (workerOnline ? "—" : (rtsp?.note || "worker_offline"));
     return { gateboxOnline, workerOnline, hbAge, lastError };
-  }, [err, sseErr, rtsp]);
+  }, [err, sseErr, rtsp, sysHealth]);
 
   const frameOverlay = useMemo(() => {
     const w = Number(boxes?.w || 0);

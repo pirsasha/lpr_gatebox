@@ -1031,6 +1031,25 @@ def api_rtsp_status():
     }
 
 
+@router.get("/system/health")
+def api_system_health():
+    """Сводное здоровье backend/worker для dashboard badge."""
+    now = time.time()
+    hb_ts = float(_last_rtsp_hb.get("ts") or 0.0)
+    age_ms = int(max(0.0, (now - hb_ts) * 1000.0)) if hb_ts > 0 else None
+    worker_online = bool(hb_ts > 0 and age_ms is not None and age_ms < 5000)
+    note = str(_last_rtsp_hb.get("note") or "")
+    if not worker_online and not note:
+        note = "no heartbeat"
+    return {
+        "ok": True,
+        "gatebox_online": True,
+        "worker_online": worker_online,
+        "last_heartbeat_age_ms": age_ms,
+        "last_error": note,
+    }
+
+
 # =========================
 # WHITELIST API (для UI)
 # =========================

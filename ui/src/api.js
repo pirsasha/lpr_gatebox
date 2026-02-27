@@ -79,6 +79,10 @@ export function getRtspStatus() {
   return apiGet(`${API_LEGACY}/rtsp/status`);
 }
 
+export function getSystemHealth() {
+  return apiGet(`${API_V1}/system/health`);
+}
+
 export function rtspFrameUrl(ts) {
   const q = ts ? `?ts=${encodeURIComponent(String(ts))}` : "";
   return apiUrl(`${API_LEGACY}/rtsp/frame.jpg${q}`);
