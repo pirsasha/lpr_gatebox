@@ -42,6 +42,34 @@ Debug-артефакты rejected_unsane пишутся в `SAVE_DIR`:
 
 ---
 
+## rtsp_worker: stabilization & best-crop ENV (v0.5.1)
+
+Для улучшения стабильности confirm (когда `track_new=1` слишком часто и `hits` не копятся):
+
+- Новые дефолты tracking:
+  - `TRACK_IOU_MIN=0.18` (было 0.10)
+  - `TRACK_HOLD_SEC=1.6` (было 1.0)
+  - `TRACK_ALPHA=0.75` (было 0.65)
+
+- Новый режим стабилизации:
+  - `STAB_MODE=track|plate|hybrid` (по умолчанию `track`)
+  - `track` — только track-based поведение (backward compatible)
+  - `plate` — plate-based накопление hits по `plate_norm`
+  - `hybrid` — комбинация track + plate
+
+- Опциональный best-crop буфер:
+  - `BEST_CROP_ENABLE=0`
+  - `BEST_CROP_WINDOW_SEC=1.5`
+  - `BEST_CROP_MAX_SEND=1`
+
+  В пределах окна выбирается лучший crop по score:
+  `score = conf * area_ratio * sharpness`
+
+- Логи решения отправки (rate-limit):
+  - `DECISION_LOG_EVERY_SEC=2.0`
+
+---
+
 ## Быстрый старт (чистая установка на Linux/Proxmox)
 
 ### 1) Клонировать репозиторий

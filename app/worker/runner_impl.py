@@ -16,6 +16,7 @@
 from __future__ import annotations
 
 import os
+import re
 import time
 from typing import Dict, List, Optional, Tuple
 
@@ -250,9 +251,22 @@ RECTIFY_H = env_int("RECTIFY_H", 96)
 
 # Tracking
 TRACK_ENABLE = env_bool("TRACK_ENABLE", True)
-TRACK_HOLD_SEC = env_float("TRACK_HOLD_SEC", 1.0)
-TRACK_ALPHA = env_float("TRACK_ALPHA", 0.65)
-TRACK_IOU_MIN = env_float("TRACK_IOU_MIN", 0.10)
+TRACK_HOLD_SEC = env_float("TRACK_HOLD_SEC", 1.6)
+TRACK_ALPHA = env_float("TRACK_ALPHA", 0.75)
+TRACK_IOU_MIN = env_float("TRACK_IOU_MIN", 0.18)
+
+# Stabilization strategy
+STAB_MODE = env_str("STAB_MODE", "track").strip().lower()
+if STAB_MODE not in ("track", "plate", "hybrid"):
+    STAB_MODE = "track"
+
+# Best-crop buffering (optional): choose best crop in short window before sending
+BEST_CROP_ENABLE = env_bool("BEST_CROP_ENABLE", False)
+BEST_CROP_WINDOW_SEC = env_float("BEST_CROP_WINDOW_SEC", 1.5)
+BEST_CROP_MAX_SEND = env_int("BEST_CROP_MAX_SEND", 1)
+
+# Decision log rate-limit
+DECISION_LOG_EVERY_SEC = env_float("DECISION_LOG_EVERY_SEC", 2.0)
 
 # Event mode
 EVENT_MODE = env_str("EVENT_MODE", "on_plate_change").lower()
@@ -358,6 +372,20 @@ def choose_plate_pad(bbox_w: int, bbox_h: int) -> Tuple[float, str]:
 
     pad = max(0.0, min(float(PLATE_PAD_MAX), float(pad)))
     return float(pad), str(reason)
+
+
+def _plate_norm(plate: str) -> str:
+    return re.sub(r"[^A-Z0-9]", "", str(plate or "").upper())
+
+
+def _sharpness_score(img: Optional[np.ndarray]) -> float:
+    if img is None or img.size <= 0:
+        return 0.0
+    try:
+        g = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY) if len(img.shape) == 3 else img
+        return float(cv2.Laplacian(g, cv2.CV_64F).var())
+    except Exception:
+        return 0.0
 
 
 def rectify_plate(crop_bgr: np.ndarray, out_w: int, out_h: int) -> Optional[np.ndarray]:
@@ -665,6 +693,8 @@ def main() -> None:
 
     runtime_overrides_last: dict = {}
     last_unsane_dump_ts = 0.0
+    last_decision_log_ts = 0.0
+    best_crop_buf: List[Dict[str, object]] = []
     roi_poly: List[Tuple[int, int]] = parse_roi_poly_str(str(ROI_POLY_STR or ""), max(1, w), max(1, h)) if (w > 0 and h > 0) else []
 
     while True:
@@ -1095,25 +1125,63 @@ def main() -> None:
 
         # SEND decision
         want_send = False
+        send_reason = "no_crop"
         if crop_to_send is not None and crop_to_send.size > 0:
             if EVENT_MODE == "always":
                 want_send = True
+                send_reason = "event_mode_always"
             elif EVENT_MODE == "on_new_track":
                 want_send = bool(track_new)
+                send_reason = "new_track" if want_send else "same_track"
             elif EVENT_MODE in ("on_plate_change", "on_plate_confirmed"):
-                if track_new:
+                if STAB_MODE in ("track", "hybrid") and track_new:
                     want_send = True
+                    send_reason = "track_new"
                 else:
                     last = events.last_seen_plate
                     if not last:
                         want_send = True
+                        send_reason = "first_plate"
                     else:
                         want_send = bool(events.can_send_plate(now, last))
+                        send_reason = "plate_resend_ready" if want_send else "plate_resend_cooldown"
 
         if want_send and not events.can_send_global(now):
             want_send = False
+            send_reason = "global_throttle"
         if want_send and now < next_send_ts:
             want_send = False
+            send_reason = "send_fps_throttle"
+
+        best_crop_score = 0.0
+        if crop_to_send is not None and crop_to_send.size > 0 and BEST_CROP_ENABLE:
+            try:
+                area_ratio = float((crop_to_send.shape[0] * crop_to_send.shape[1]) / max(1.0, float(w * h)))
+                det_conf = float(best_full.conf) if best_full is not None else 0.0
+                sharp = _sharpness_score(crop_to_send)
+                best_crop_score = float(det_conf * area_ratio * max(1.0, min(1000.0, sharp)))
+                best_crop_buf.append({
+                    "ts": float(now),
+                    "crop": crop_to_send.copy(),
+                    "score": best_crop_score,
+                    "pre_variant": str(pre_variant),
+                    "pre_warped": bool(pre_warped),
+                })
+            except Exception:
+                pass
+
+            win = max(0.3, float(BEST_CROP_WINDOW_SEC))
+            best_crop_buf = [x for x in best_crop_buf if (now - float(x.get("ts", now))) <= win]
+
+            if want_send and best_crop_buf:
+                best_crop_buf.sort(key=lambda x: float(x.get("score", 0.0)), reverse=True)
+                chosen = best_crop_buf[: max(1, int(BEST_CROP_MAX_SEND))]
+                pick = chosen[0]
+                crop_to_send = pick.get("crop") if isinstance(pick.get("crop"), np.ndarray) else crop_to_send
+                pre_variant = str(pick.get("pre_variant") or pre_variant)
+                pre_warped = bool(pick.get("pre_warped"))
+                send_reason = f"best_crop(score={float(pick.get('score', 0.0)):.4f})"
+                best_crop_buf = []
 
         resp = None
         jpeg_bytes_sent: Optional[bytes] = None
@@ -1154,21 +1222,29 @@ def main() -> None:
                 plate = str(resp.get("plate", "") or "")
                 valid = bool(resp.get("valid", False))
 
+            plate_norm = _plate_norm(plate)
             if plate and valid:
-                events.mark_seen(now, plate)
+                events.mark_seen(now, plate_norm)
 
             if EVENT_MODE == "on_plate_change":
                 if plate and valid:
-                    if plate != events.last_sent_plate:
-                        events.mark_sent(now, plate)
+                    if plate_norm != events.last_sent_plate:
+                        events.mark_sent(now, plate_norm)
                     else:
-                        if events.can_send_plate(now, plate):
-                            events.mark_sent(now, plate)
+                        if events.can_send_plate(now, plate_norm):
+                            events.mark_sent(now, plate_norm)
             elif EVENT_MODE == "on_plate_confirmed":
                 if plate and valid:
-                    hits = events.note_plate(now, plate)
-                    if hits >= PLATE_CONFIRM_K and events.can_send_plate(now, plate):
-                        events.mark_sent(now, plate)
+                    hits = events.note_plate(now, plate_norm)
+                    if hits >= PLATE_CONFIRM_K and events.can_send_plate(now, plate_norm):
+                        events.mark_sent(now, plate_norm)
+
+            if STAB_MODE in ("plate", "hybrid") and plate and valid:
+                _ = events.note_plate(now, plate_norm)
+
+        if DECISION_LOG_EVERY_SEC > 0 and (now - last_decision_log_ts) >= DECISION_LOG_EVERY_SEC:
+            print(f"[rtsp_worker] decision send={int(want_send)} reason={send_reason} mode={EVENT_MODE}/{STAB_MODE} track_new={int(track_new)} best_score={best_crop_score:.4f}")
+            last_decision_log_ts = now
 
         # heartbeat
         if HB_EVERY_SEC > 0 and (now - hb_last) >= HB_EVERY_SEC:
