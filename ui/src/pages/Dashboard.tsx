@@ -1,5 +1,5 @@
 import React, { useEffect, useMemo, useState } from "react";
-import { addWhitelistPlate, getRecentPlates, getRtspStatus, rtspFrameUrl } from "../api";
+import { addWhitelistPlate, getRecentPlates, getRtspStatus, rtspBoxes, rtspFrameUrl } from "../api";
 import { useEventsStream } from "../hooks/useEventsStream";
 
 type RecentPlateItem = {
@@ -8,6 +8,22 @@ type RecentPlateItem = {
   conf?: number;
   file: string;
   image_url: string;
+};
+
+
+type BoxItem = {
+  x1: number;
+  y1: number;
+  x2: number;
+  y2: number;
+  conf?: number;
+};
+
+type BoxesPayload = {
+  ts: number;
+  w?: number;
+  h?: number;
+  items: BoxItem[];
 };
 
 type RtspStatus = {
@@ -43,14 +59,16 @@ export default function DashboardPage() {
 
   const [frameUrl, setFrameUrl] = useState<string>(rtspFrameUrl(Date.now()));
   const [frameOk, setFrameOk] = useState<boolean>(false);
+  const [boxes, setBoxes] = useState<BoxesPayload | null>(null);
 
   useEffect(() => {
     let mounted = true;
     const tick = async () => {
       try {
-        const rs = await getRtspStatus();
+        const [rs, bx] = await Promise.all([getRtspStatus(), rtspBoxes()]);
         if (!mounted) return;
         setRtsp(rs || null);
+        setBoxes((bx?.boxes || null) as BoxesPayload | null);
         setLastUpdate(Date.now());
         setErr(null);
       } catch (e: any) {
@@ -128,6 +146,31 @@ export default function DashboardPage() {
     return <Badge tone="green">работает</Badge>;
   }, [rtsp]);
 
+  const frameOverlay = useMemo(() => {
+    const w = Number(boxes?.w || 0);
+    const h = Number(boxes?.h || 0);
+    if (w <= 0 || h <= 0) return null;
+
+    const items = Array.isArray(boxes?.items) ? boxes.items : [];
+    const rects = items
+      .map((it, i) => {
+        if (![it.x1, it.y1, it.x2, it.y2].every((v) => Number.isFinite(v))) return null;
+        const x = (it.x1 / w) * 100;
+        const y = (it.y1 / h) * 100;
+        const rw = ((it.x2 - it.x1) / w) * 100;
+        const rh = ((it.y2 - it.y1) / h) * 100;
+        if (rw <= 0 || rh <= 0) return null;
+        return <rect key={`db-box-${i}`} x={x} y={y} width={rw} height={rh} className="yoloBox" />;
+      })
+      .filter(Boolean);
+
+    return (
+      <svg className="frameOverlay" viewBox="0 0 100 100" preserveAspectRatio="none">
+        {rects}
+      </svg>
+    );
+  }, [boxes]);
+
   return (
     <div className="grid2">
       <div className="col">
@@ -152,13 +195,14 @@ export default function DashboardPage() {
               </div>
             </div>
 
-            <div className="frameWrap" style={{ marginTop: 8 }}>
-              <img className="frameImg" src={frameUrl} alt="snapshot" onLoad={() => setFrameOk(true)} onError={() => setFrameOk(false)} />
+            <div className="frameWrap dashboardPreviewWrap" style={{ marginTop: 8 }}>
+              <img className="frameImg" src={frameUrl} alt="snapshot with boxes" onLoad={() => setFrameOk(true)} onError={() => setFrameOk(false)} />
+              {frameOverlay}
             </div>
 
             {!frameOk && (
               <div className="hint muted">
-                Кадр ещё не доступен. Проверь, что <span className="mono">rtsp_worker</span> пишет в <span className="mono">/config/live/frame.jpg</span>.
+                Кадр с bbox ещё не доступен. Проверь, что <span className="mono">rtsp_worker</span> пишет в <span className="mono">/config/live/frame.jpg</span> и <span className="mono">/config/live/boxes.json</span>.
               </div>
             )}
           </div>
