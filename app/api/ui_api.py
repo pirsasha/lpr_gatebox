@@ -652,6 +652,57 @@ def _validate_settings_patch(patch: Dict[str, Any]) -> None:
 
 
 
+
+
+# rtsp_worker override classification for UI contract
+_RTSP_HOT_OVERRIDES = {
+    "READ_FPS", "DET_FPS", "SEND_FPS",
+    "DET_CONF", "DET_IOU", "DET_IMG_SIZE",
+    "PLATE_PAD", "PLATE_PAD_BASE", "PLATE_PAD_SMALL", "PLATE_PAD_SMALL_W", "PLATE_PAD_SMALL_H", "PLATE_PAD_MAX",
+    "RECTIFY", "RECTIFY_W", "RECTIFY_H",
+    "REFINE_INNER_PAD", "REFINE_MIN_AREA_RATIO",
+    "DESKEW_ENABLE", "DESKEW_MAX_ANGLE_DEG", "DESKEW_MIN_ANGLE_DEG",
+    "UPSCALE_ENABLE", "UPSCALE_MIN_W", "UPSCALE_MIN_H",
+    "JPEG_QUALITY",
+    "SAVE_DIR", "SAVE_EVERY", "SAVE_FULL_FRAME", "SAVE_WITH_ROI",
+    "LOG_EVERY_SEC",
+    "ROI_STR", "ROI_POLY_STR",
+}
+
+# сохраняются в settings.json, но требуют ручного рестарта/перезапуска worker
+_RTSP_RESTART_ONLY_OVERRIDES = {
+    "AUTO_MODE", "AUTO_DROP_ON_BLUR", "AUTO_DROP_ON_GLARE",
+    "AUTO_RECTIFY", "AUTO_PAD_ENABLE", "AUTO_UPSCALE_ENABLE",
+    "TRACK_ENABLE", "FREEZE_ENABLE",
+    "RTSP_TRANSPORT", "LIVE_DRAW_YOLO", "LIVE_SAVE_QUAD",
+}
+
+
+def _classify_rtsp_overrides(settings_patch: Dict[str, Any]) -> Dict[str, list[str]]:
+    rt = settings_patch.get("rtsp_worker") if isinstance(settings_patch, dict) else None
+    ov = rt.get("overrides") if isinstance(rt, dict) else None
+    if not isinstance(ov, dict):
+        return {"applied": [], "queued_restart": [], "unknown": []}
+
+    applied: list[str] = []
+    queued_restart: list[str] = []
+    unknown: list[str] = []
+
+    for k in ov.keys():
+        key = str(k)
+        if key in _RTSP_HOT_OVERRIDES:
+            applied.append(key)
+        elif key in _RTSP_RESTART_ONLY_OVERRIDES:
+            queued_restart.append(key)
+        else:
+            unknown.append(key)
+
+    return {
+        "applied": sorted(set(applied)),
+        "queued_restart": sorted(set(queued_restart)),
+        "unknown": sorted(set(unknown)),
+    }
+
 def _drop_empty_cloudpub_access_key(patch: Dict[str, Any]) -> Dict[str, Any]:
     """cloudpub.access_key == '' или masked '***' не должны затирать сохранённый ключ."""
     if not isinstance(patch, dict):
@@ -690,8 +741,9 @@ def api_put_settings(patch: Dict[str, Any]):
     data_in = _drop_empty_mqtt_pass(data_in)
     data_in = _drop_empty_cloudpub_access_key(data_in)
     _validate_settings_patch(data_in)
+    overrides_apply = _classify_rtsp_overrides(data_in)
     data = st.update(data_in)
-    return {"ok": True, "settings": _mask_settings_for_get(data)}
+    return {"ok": True, "settings": _mask_settings_for_get(data), "overrides_apply": overrides_apply}
 
 
 @router.post("/settings/reset")
