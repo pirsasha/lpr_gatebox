@@ -70,6 +70,24 @@ Debug-артефакты rejected_unsane пишутся в `SAVE_DIR`:
 
 ---
 
+## rtsp_worker: Candidate debug
+
+Для диагностики кейса `det>0`, но `best='-'` / `sanity=no_candidate_crop`:
+
+- `CANDIDATE_DEBUG_ENABLE=0` — включить/выключить диагностические логи кандидатов
+- `CANDIDATE_DEBUG_EVERY_SEC=2.0` — интервал rate-limit для cand/debug snapshot
+- `CANDIDATE_DEBUG_SAMPLE=0` — логировать 1 sample отфильтрованной детекции (reason + bbox + conf)
+- `CANDIDATE_DEBUG_COORDS=0` — печатать bbox в системах ROI/full-frame + warning на mismatch
+- `CANDIDATE_DEBUG_SAVE=0` — сохранить 1 JPEG с bbox до фильтров, когда `det_total>0` и `after=0`
+
+Полезная команда:
+
+```bash
+docker compose logs -f rtsp_worker | rg "cand_dbg|no_candidate_crop|rejected_unsane"
+```
+
+---
+
 ## Быстрый старт (чистая установка на Linux/Proxmox)
 
 ### 1) Клонировать репозиторий

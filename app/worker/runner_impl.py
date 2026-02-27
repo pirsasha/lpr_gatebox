@@ -293,6 +293,11 @@ SAVE_WITH_ROI = SAVE_WITH_ROI_ENV
 LOG_EVERY_SEC = LOG_EVERY_SEC_ENV
 
 SAVE_SEND_BYTES = env_bool("SAVE_SEND_BYTES", False)
+CANDIDATE_DEBUG_ENABLE = env_bool("CANDIDATE_DEBUG_ENABLE", False)
+CANDIDATE_DEBUG_EVERY_SEC = env_float("CANDIDATE_DEBUG_EVERY_SEC", 2.0)
+CANDIDATE_DEBUG_SAMPLE = env_bool("CANDIDATE_DEBUG_SAMPLE", False)
+CANDIDATE_DEBUG_COORDS = env_bool("CANDIDATE_DEBUG_COORDS", False)
+CANDIDATE_DEBUG_SAVE = env_bool("CANDIDATE_DEBUG_SAVE", False)
 UPSCALE_ENABLE = env_bool("UPSCALE_ENABLE", True)
 UPSCALE_MIN_W = env_int("UPSCALE_MIN_W", 320)
 UPSCALE_MIN_H = env_int("UPSCALE_MIN_H", 96)
@@ -694,6 +699,11 @@ def main() -> None:
     runtime_overrides_last: dict = {}
     last_unsane_dump_ts = 0.0
     last_decision_log_ts = 0.0
+    last_cand_dbg_ts_mono = 0.0
+    last_filter_thr_log_ts_mono = 0.0
+    last_sanity_summary_ts_mono = 0.0
+    best_missing_with_det = 0
+    sanity_summary = {"ok": 0, "too_small": 0, "no_candidate_crop": 0, "rejected_unsane": 0, "other": 0}
     best_crop_buf: List[Dict[str, object]] = []
     roi_poly: List[Tuple[int, int]] = parse_roi_poly_str(str(ROI_POLY_STR or ""), max(1, w), max(1, h)) if (w > 0 and h > 0) else []
 
@@ -865,11 +875,29 @@ def main() -> None:
 
         det_cnt = len(dets_roi)
 
+        cand_det_total = int(det_cnt)
+        cand_after_filters = 0
+        cand_filtered_roi = 0
+        cand_filtered_poly = 0
+        cand_filtered_min_wh = 0
+        cand_filtered_area = 0
+        cand_filtered_aspect = 0
+        cand_filtered_track = 0
+        cand_filtered_other = 0
+        cand_best_selected = 0
+        cand_sample_reason = ""
+        cand_sample_idx = -1
+
         best_roi: Optional[DetBox] = None
         if dets_roi:
             cand = dets_roi[0]
             if cand.w() >= MIN_PLATE_W and cand.h() >= MIN_PLATE_H:
                 best_roi = cand
+                cand_after_filters = 1
+            else:
+                cand_filtered_min_wh += 1
+                cand_sample_reason = "min_wh"
+                cand_sample_idx = 0
 
         # tracking
         track_new = False
@@ -889,6 +917,9 @@ def main() -> None:
                     track.last_seen_ts = now
                     best_full = track.box
                 else:
+                    cand_filtered_track += 1
+                    if not cand_sample_reason:
+                        cand_sample_reason = "track_iou"
                     track.track_id += 1
                     track_new = True
                     track.box = cur_full
@@ -911,8 +942,37 @@ def main() -> None:
         if best_full is not None and roi_poly:
             cx = 0.5 * (float(best_full.x1) + float(best_full.x2))
             cy = 0.5 * (float(best_full.y1) + float(best_full.y2))
+            inside_pts = 0
+            for px, py in roi_poly:
+                if int(best_full.x1) <= int(px) <= int(best_full.x2) and int(best_full.y1) <= int(py) <= int(best_full.y2):
+                    inside_pts += 1
             if not point_in_polygon(cx, cy, roi_poly):
+                cand_filtered_poly += 1
+                if not cand_sample_reason:
+                    cand_sample_reason = "poly"
                 best_full = None
+            if CANDIDATE_DEBUG_ENABLE and CANDIDATE_DEBUG_COORDS and cand_det_total > 0:
+                print(f"[rtsp_worker] cand_poly method=center_in_polygon pts_inside_bbox={inside_pts} poly_pts={len(roi_poly)}")
+
+        if best_full is not None and (best_full.x2 <= x1 or best_full.x1 >= x2 or best_full.y2 <= y1 or best_full.y1 >= y2):
+            cand_filtered_roi += 1
+            if not cand_sample_reason:
+                cand_sample_reason = "roi_mismatch_warn"
+            if CANDIDATE_DEBUG_ENABLE:
+                print(f"[rtsp_worker] WARN cand_roi_mismatch bbox_full=({best_full.x1},{best_full.y1},{best_full.x2},{best_full.y2}) roi=({x1},{y1},{x2},{y2})")
+
+        if CANDIDATE_DEBUG_ENABLE and CANDIDATE_DEBUG_COORDS and best_full is not None:
+            bwf = int(best_full.x2 - best_full.x1)
+            bhf = int(best_full.y2 - best_full.y1)
+            broi_x1 = int(best_full.x1 - x1)
+            broi_y1 = int(best_full.y1 - y1)
+            broi_x2 = int(best_full.x2 - x1)
+            broi_y2 = int(best_full.y2 - y1)
+            roi_w = max(1, int(x2 - x1))
+            roi_h = max(1, int(y2 - y1))
+            if broi_x1 < -2 or broi_y1 < -2 or broi_x2 > (roi_w + 2) or broi_y2 > (roi_h + 2):
+                print(f"[rtsp_worker] WARN cand_coords_mismatch bbox_full=({best_full.x1},{best_full.y1},{best_full.x2},{best_full.y2}) bbox_roi=({broi_x1},{broi_y1},{broi_x2},{broi_y2}) roi_wh={roi_w}x{roi_h}")
+            print(f"[rtsp_worker] cand_coords detector_space=roi bbox_full=({best_full.x1},{best_full.y1},{best_full.x2},{best_full.y2}) bbox_roi=({broi_x1},{broi_y1},{broi_x2},{broi_y2}) wh_full={bwf}x{bhf}")
 
         # live preview
         if LIVE_EVERY_SEC > 0 and (now - last_live_write) >= LIVE_EVERY_SEC:
@@ -1080,6 +1140,18 @@ def main() -> None:
                 crop_to_send = None
                 pre_variant = "rejected_unsane"
                 pre_warped = False
+                if str(sanity_fail_reason).startswith("too_small"):
+                    cand_filtered_min_wh += 1
+                elif str(sanity_fail_reason).startswith("aspect"):
+                    cand_filtered_aspect += 1
+                elif str(sanity_fail_reason).startswith("ar"):
+                    cand_filtered_aspect += 1
+                elif str(sanity_fail_reason).startswith("too_narrow"):
+                    cand_filtered_aspect += 1
+                elif str(sanity_fail_reason).startswith("too_low"):
+                    cand_filtered_area += 1
+                else:
+                    cand_filtered_other += 1
 
                 if (now - float(last_unsane_dump_ts)) >= float(SANITY_DEBUG_REJECT_EVERY_SEC):
                     try:
@@ -1097,6 +1169,84 @@ def main() -> None:
                         pass
         else:
             sanity_fail_reason = "no_candidate_crop"
+
+        cand_after_filters = int(best_full is not None)
+        cand_best_selected = int(crop_to_send is not None and crop_to_send.size > 0)
+        if cand_det_total > 0 and cand_best_selected == 0:
+            best_missing_with_det += 1
+
+        if cand_best_selected:
+            sanity_summary["ok"] += 1
+        else:
+            if str(sanity_fail_reason).startswith("too_small"):
+                sanity_summary["too_small"] += 1
+            elif str(sanity_fail_reason) == "no_candidate_crop":
+                sanity_summary["no_candidate_crop"] += 1
+            elif str(pre_variant) == "rejected_unsane":
+                sanity_summary["rejected_unsane"] += 1
+            else:
+                sanity_summary["other"] += 1
+
+        if CANDIDATE_DEBUG_ENABLE and cand_det_total > 0:
+            tmono = time.monotonic()
+            dbg_every = max(0.5, float(CANDIDATE_DEBUG_EVERY_SEC))
+            if (tmono - float(last_cand_dbg_ts_mono)) >= dbg_every:
+                if cand_det_total > 0:
+                    top = sorted(dets_roi, key=lambda d: float(d.conf), reverse=True)[:3]
+                    snap_parts = []
+                    for d in top:
+                        dw, dh = max(1, d.w()), max(1, d.h())
+                        ar = float(dw) / float(max(1, dh))
+                        area = float(dw * dh) / float(max(1, roi_frame.shape[0] * roi_frame.shape[1]))
+                        snap_parts.append(f"c={float(d.conf):.2f} wh={dw}x{dh} ar={ar:.2f} area={area:.4f}")
+                    print(f"[rtsp_worker] det_snapshot top3={' | '.join(snap_parts) if snap_parts else '-'}")
+
+                print(
+                    f"[rtsp_worker] cand_dbg det_total={cand_det_total} after={cand_after_filters} "
+                    f"roi={cand_filtered_roi} poly={cand_filtered_poly} min_wh={cand_filtered_min_wh} "
+                    f"area={cand_filtered_area} aspect={cand_filtered_aspect} track={cand_filtered_track} other={cand_filtered_other} "
+                    f"best={cand_best_selected} sanity={sanity_fail_reason} roi=({x1},{y1},{x2},{y2}) roi_poly_pts={len(roi_poly)}"
+                )
+
+                if CANDIDATE_DEBUG_SAMPLE and cand_det_total > 0 and cand_after_filters == 0 and dets_roi:
+                    src = sorted(dets_roi, key=lambda d: float(d.conf), reverse=True)[0]
+                    print(
+                        f"[rtsp_worker] cand_sample reason={cand_sample_reason or 'unknown'} "
+                        f"bbox_roi=({src.x1},{src.y1},{src.w()},{src.h()}) conf={float(src.conf):.3f}"
+                    )
+
+                if CANDIDATE_DEBUG_SAVE and cand_det_total > 0 and cand_after_filters == 0:
+                    try:
+                        stamp = int(now * 1000)
+                        vis = frame.copy()
+                        for d in dets_roi:
+                            fx1, fy1, fx2, fy2 = int(d.x1 + x1), int(d.y1 + y1), int(d.x2 + x1), int(d.y2 + y1)
+                            cv2.rectangle(vis, (fx1, fy1), (fx2, fy2), (0, 255, 255), 2)
+                            cv2.putText(vis, f"{float(d.conf):.2f}", (fx1, max(14, fy1 - 4)), cv2.FONT_HERSHEY_SIMPLEX, 0.45, (0, 255, 255), 1, cv2.LINE_AA)
+                        cv2.putText(vis, f"cand_after=0 reason={cand_sample_reason or 'unknown'}", (16, 28), cv2.FONT_HERSHEY_SIMPLEX, 0.55, (0, 140, 255), 2, cv2.LINE_AA)
+                        cv2.imwrite(os.path.join(SAVE_DIR, f"cand_dbg_{stamp}.jpg"), vis)
+                    except Exception:
+                        pass
+
+                last_cand_dbg_ts_mono = tmono
+
+            if (tmono - float(last_filter_thr_log_ts_mono)) >= 10.0:
+                print(
+                    f"[rtsp_worker] filter_thresholds min_wh={int(MIN_PLATE_W)}x{int(MIN_PLATE_H)} "
+                    f"area_min={float(SANITY_ADAPTIVE_AREA_MIN):.4f} aspect_min={float(SANITY_ASPECT_MIN_BASE):.2f}/{float(SANITY_ASPECT_MIN_ADAPTIVE):.2f} "
+                    f"roi_rect=1 roi_poly={int(bool(roi_poly))} poly_method=center_in_polygon"
+                )
+                print(f"[rtsp_worker] cand_dbg best_missing_with_det_10s={int(best_missing_with_det)}")
+                best_missing_with_det = 0
+                last_filter_thr_log_ts_mono = tmono
+
+            if (tmono - float(last_sanity_summary_ts_mono)) >= 5.0:
+                print(
+                    f"[rtsp_worker] sanity_summary_5s ok={int(sanity_summary['ok'])} too_small={int(sanity_summary['too_small'])} "
+                    f"no_candidate_crop={int(sanity_summary['no_candidate_crop'])} rejected_unsane={int(sanity_summary['rejected_unsane'])} other={int(sanity_summary['other'])}"
+                )
+                sanity_summary = {"ok": 0, "too_small": 0, "no_candidate_crop": 0, "rejected_unsane": 0, "other": 0}
+                last_sanity_summary_ts_mono = tmono
 
         # APPLY PREPROC
         if crop_to_send is not None and crop_to_send.size > 0:
