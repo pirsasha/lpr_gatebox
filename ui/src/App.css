@@ -92,6 +92,7 @@ body{
   padding: 6px;
   border-radius: 999px;
   box-shadow: var(--shadow2);
+  max-width: 100%;
 }
 
 .tab{
@@ -349,4 +350,26 @@ body{
   overflow: auto;
   font-size: 12px;
   line-height: 1.35;
+}
+@media (max-width: 768px){
+  .topbar{
+    display:block;
+  }
+  .tabs{
+    margin-top: 10px;
+    overflow-x: auto;
+    overflow-y: hidden;
+    -webkit-overflow-scrolling: touch;
+    overscroll-behavior-x: contain;
+    scrollbar-width: none;
+    white-space: nowrap;
+    border-radius: 14px;
+    max-width: 100%;
+  }
+  .tabs::-webkit-scrollbar{
+    display: none;
+  }
+  .tab{
+    flex: 0 0 auto;
+  }
 }
