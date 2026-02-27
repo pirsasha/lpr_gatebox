@@ -60,6 +60,21 @@ export default function DashboardPage() {
   const [frameUrl, setFrameUrl] = useState<string>(rtspFrameUrl(Date.now()));
   const [frameOk, setFrameOk] = useState<boolean>(false);
   const [boxes, setBoxes] = useState<BoxesPayload | null>(null);
+  const [showBbox, setShowBbox] = useState<boolean>(() => {
+    try {
+      return localStorage.getItem("dashboard_bbox_on") !== "0";
+    } catch {
+      return true;
+    }
+  });
+
+  useEffect(() => {
+    try {
+      localStorage.setItem("dashboard_bbox_on", showBbox ? "1" : "0");
+    } catch {
+      // ignore localStorage errors
+    }
+  }, [showBbox]);
 
   useEffect(() => {
     let mounted = true;
@@ -190,6 +205,9 @@ export default function DashboardPage() {
             <div className="row" style={{ justifyContent: "space-between" }}>
               <div className="muted">Обновлено: {lastUpdate ? new Date(lastUpdate).toLocaleTimeString() : "—"}</div>
               <div className="row" style={{ gap: 10 }}>
+                <button className="btn" type="button" onClick={() => setShowBbox((v) => !v)}>
+                  BBox: {showBbox ? "ON" : "OFF"}
+                </button>
                 <span className="muted">События:</span>
                 {sseOnline ? <Badge tone="green">онлайн</Badge> : <Badge tone="red">нет связи</Badge>}
               </div>
@@ -197,7 +215,7 @@ export default function DashboardPage() {
 
             <div className="frameWrap dashboardPreviewWrap" style={{ marginTop: 8 }}>
               <img className="frameImg" src={frameUrl} alt="snapshot with boxes" onLoad={() => setFrameOk(true)} onError={() => setFrameOk(false)} />
-              {frameOverlay}
+              {showBbox ? frameOverlay : null}
             </div>
 
             {!frameOk && (
