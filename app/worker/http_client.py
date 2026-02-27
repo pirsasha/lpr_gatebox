@@ -12,7 +12,43 @@ from typing import Optional, Tuple
 import cv2
 import requests
 import numpy as np
+from requests.adapters import HTTPAdapter
+from urllib3.util.retry import Retry
 
+
+
+
+_SESSION: requests.Session | None = None
+
+
+def _timeout_sec(x: float, default: float = 2.0) -> float:
+    try:
+        v = float(x)
+    except Exception:
+        v = float(default)
+    return max(0.2, min(15.0, v))
+
+
+def _http_session() -> requests.Session:
+    global _SESSION
+    if _SESSION is not None:
+        return _SESSION
+
+    s = requests.Session()
+    retry = Retry(
+        total=1,
+        connect=1,
+        read=1,
+        backoff_factor=0.1,
+        status_forcelist=(502, 503, 504),
+        allowed_methods=frozenset({"GET", "POST"}),
+        raise_on_status=False,
+    )
+    adapter = HTTPAdapter(pool_connections=8, pool_maxsize=16, max_retries=retry)
+    s.mount("http://", adapter)
+    s.mount("https://", adapter)
+    _SESSION = s
+    return s
 
 def infer_base_url(infer_url: str) -> str:
     u = (infer_url or "").strip()
@@ -27,14 +63,14 @@ def post_heartbeat(url: str, payload: dict, timeout_sec: float = 1.0) -> None:
     if not url:
         return
     try:
-        requests.post(url, json=payload, timeout=timeout_sec)
+        _http_session().post(url, json=payload, timeout=_timeout_sec(timeout_sec, 1.0))
     except Exception:
         return
 
 
 def get_json(url: str, timeout_sec: float = 2.0) -> Optional[dict]:
     try:
-        r = requests.get(url, timeout=timeout_sec)
+        r = _http_session().get(url, timeout=_timeout_sec(timeout_sec, 2.0))
         if not r.ok:
             return None
         return r.json()
@@ -154,7 +190,7 @@ def post_crop(
         "pre_timing_ms": json.dumps(pre_timing or {}, ensure_ascii=False),
     }
 
-    r = requests.post(infer_url, files=files, data=data, timeout=timeout_sec)
+    r = _http_session().post(infer_url, files=files, data=data, timeout=_timeout_sec(timeout_sec, 2.0))
     r.raise_for_status()
     return r.json(), jpeg_bytes
     
