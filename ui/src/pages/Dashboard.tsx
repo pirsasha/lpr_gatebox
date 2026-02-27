@@ -71,6 +71,26 @@ export default function DashboardPage() {
       return true;
     }
   });
+  const [previewPollMs, setPreviewPollMs] = useState<number>(() => 1000);
+
+  useEffect(() => {
+    const conn: any = (navigator as any)?.connection;
+    const calcMs = () => {
+      const et = String(conn?.effectiveType || "");
+      const saveData = Boolean(conn?.saveData);
+      if (saveData || et === "slow-2g" || et === "2g") return 2500;
+      if (et === "3g") return 1500;
+      return 1000;
+    };
+
+    setPreviewPollMs(calcMs());
+    const onChange = () => setPreviewPollMs(calcMs());
+    if (conn && typeof conn.addEventListener === "function") {
+      conn.addEventListener("change", onChange);
+      return () => conn.removeEventListener("change", onChange);
+    }
+    return;
+  }, []);
 
   useEffect(() => {
     try {
@@ -127,9 +147,9 @@ export default function DashboardPage() {
   useEffect(() => {
     const tick = () => setFrameUrl(rtspFrameUrl(Date.now()));
     tick();
-    const t = window.setInterval(tick, 1000);
+    const t = window.setInterval(tick, Math.max(700, previewPollMs));
     return () => window.clearInterval(t);
-  }, []);
+  }, [previewPollMs]);
 
   async function addFromDashboard(plate?: string) {
     const p = String(plate || "").trim();
@@ -258,6 +278,7 @@ export default function DashboardPage() {
                 <span className={`badge ${health.gateboxOnline ? "badge-green" : "badge-red"}`}>gatebox {health.gateboxOnline ? "online" : "offline"}</span>
                 <span className={`badge ${health.workerOnline ? "badge-green" : "badge-red"}`}>worker {health.workerOnline ? "online" : "offline"}</span>
                 <span className="badge">hb_age {health.hbAge}</span>
+                <span className="badge">preview_poll {previewPollMs}ms</span>
               </div>
               <div className="muted mono" style={{ marginTop: 4 }}>last_error: {String(health.lastError || "—")}</div>
             </div>
