@@ -20,6 +20,7 @@ import json
 import copy
 import asyncio
 import re
+from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeoutError
 from pathlib import Path
 from typing import Any, Callable, Dict, Optional, Tuple
 
@@ -985,6 +986,34 @@ def api_reload_whitelist():
 # Camera RTSP test endpoint (UI)
 # =========================================================
 
+
+_CAMERA_TEST_EXECUTOR = ThreadPoolExecutor(max_workers=2, thread_name_prefix="camera_test")
+
+
+def _camera_probe_once(rtsp_url: str) -> Dict[str, Any]:
+    import cv2  # локально, чтобы не грузить лишнее при старте
+
+    start = time.time()
+    cap = cv2.VideoCapture(rtsp_url)
+    try:
+        if not cap.isOpened():
+            return {"ok": False, "error": "cannot_open_stream"}
+
+        cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
+        ret, frame = cap.read()
+        if not ret or frame is None:
+            return {"ok": False, "error": "cannot_read_frame"}
+
+        h, w = frame.shape[:2]
+        elapsed = int((time.time() - start) * 1000)
+        return {"ok": True, "width": w, "height": h, "grab_ms": elapsed}
+    finally:
+        try:
+            cap.release()
+        except Exception:
+            pass
+
+
 class CameraTestIn(BaseModel):
     rtsp_url: str | None = None
     timeout_sec: float = 5.0
@@ -994,12 +1023,11 @@ class CameraTestIn(BaseModel):
 @router.post("/camera/test")
 def camera_test(data: CameraTestIn):
     """
-    Проверка RTSP потока:
+    Проверка RTSP потока с fail-fast timeout:
     - открываем камеру
     - читаем 1 кадр
+    - ограничиваем ожидание по timeout_sec
     """
-    import cv2  # локально, чтобы не грузить лишнее при старте
-
     if data.use_settings:
         try:
             settings = _require_store().get()
@@ -1012,19 +1040,17 @@ def camera_test(data: CameraTestIn):
     if not rtsp_url:
         return {"ok": False, "error": "rtsp_url_not_set"}
 
-    start = time.time()
+    try:
+        timeout_sec = float(data.timeout_sec)
+    except Exception:
+        timeout_sec = 5.0
+    timeout_sec = max(0.5, min(15.0, timeout_sec))
 
-    cap = cv2.VideoCapture(rtsp_url)
-    if not cap.isOpened():
-        return {"ok": False, "error": "cannot_open_stream"}
-
-    cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
-    ret, frame = cap.read()
-    cap.release()
-
-    if not ret or frame is None:
-        return {"ok": False, "error": "cannot_read_frame"}
-
-    h, w = frame.shape[:2]
-    elapsed = int((time.time() - start) * 1000)
-    return {"ok": True, "width": w, "height": h, "grab_ms": elapsed}
+    fut = _CAMERA_TEST_EXECUTOR.submit(_camera_probe_once, str(rtsp_url))
+    try:
+        return fut.result(timeout=timeout_sec)
+    except FuturesTimeoutError:
+        fut.cancel()
+        return {"ok": False, "error": "timeout", "timeout_sec": timeout_sec}
+    except Exception as e:
+        return {"ok": False, "error": "probe_exception", "detail": str(e)}
