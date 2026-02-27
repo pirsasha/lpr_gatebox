@@ -172,14 +172,14 @@ export default function DashboardPage() {
   }, [boxes]);
 
   return (
-    <div className="grid2">
+    <div className="grid2 dashboardGrid">
       <div className="col">
         <div className="card">
           <div className="cardHead">
             <div className="cardTitle">Панель</div>
             <div className="row">
               {statusBadge}
-              <span className="muted">{rtspLine}</span>
+              <span className="muted dashboardRtspLine">{rtspLine}</span>
             </div>
           </div>
 
@@ -241,7 +241,7 @@ export default function DashboardPage() {
             {!recent.length ? (
               <div className="muted">Пока нет распознанных номеров</div>
             ) : (
-              <div style={{ display: "grid", gridTemplateColumns: "repeat(5, minmax(110px,1fr))", gap: 10 }}>
+              <div className="dashboardRecentGrid">
                 {recent.map((it, idx) => (
                   <div key={`${it.file}-${idx}`} style={{ border: "1px solid rgba(255,255,255,.08)", borderRadius: 10, padding: 8 }}>
                     <img src={it.image_url} alt={it.plate || "plate"} style={{ width: "100%", aspectRatio: "3/1", objectFit: "cover", borderRadius: 8, background: "#111" }} />
@@ -258,8 +258,8 @@ export default function DashboardPage() {
           <div className="cardHead">
             <div className="cardTitle">Последние события — {events?.length || 0}</div>
           </div>
-          <div className="cardBody" style={{ padding: 0 }}>
-            <table className="table">
+          <div className="cardBody dashboardEventsTableWrap" style={{ padding: 0 }}>
+            <table className="table dashboardEventsTable">
               <thead>
                 <tr>
                   <th style={{ width: 160 }}>Время</th>
