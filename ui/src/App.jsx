@@ -11,7 +11,7 @@
 // - Вкладка "Камера" открывает НОВУЮ страницу CameraPage
 // =========================================================
 
-import React, { useEffect, useMemo, useState } from "react";
+import React, { useEffect, useMemo, useRef, useState } from "react";
 
 // ---------------------------------------------------------
 // Страницы (каждая — отдельный экран UI)
@@ -88,6 +88,7 @@ export default function App() {
   );
 
   const [tab, setTab] = useState(initialTab);
+  const tabsRef = useRef(null);
 
   // -------------------------------------------------------
   // Обработка кнопок "назад / вперёд" в браузере
@@ -97,6 +98,14 @@ export default function App() {
     window.addEventListener("popstate", onPop);
     return () => window.removeEventListener("popstate", onPop);
   }, []);
+
+  useEffect(() => {
+    const root = tabsRef.current;
+    if (!root) return;
+    const active = root.querySelector(`button[data-tab="${tab}"]`);
+    if (!active || typeof active.scrollIntoView !== "function") return;
+    active.scrollIntoView({ behavior: "smooth", inline: "center", block: "nearest" });
+  }, [tab]);
 
   // -------------------------------------------------------
   // Переход между вкладками
@@ -133,9 +142,10 @@ export default function App() {
         </div>
 
         {/* ---------- ВКЛАДКИ ---------- */}
-        <div className="tabs">
+        <div className="tabs" ref={tabsRef}>
           <button
             type="button"
+            data-tab="home"
             className={`tab ${tab === "home" ? "isActive" : ""}`}
             onClick={() => go("home")}
           >
@@ -144,6 +154,7 @@ export default function App() {
 
           <button
             type="button"
+            data-tab="whitelist"
             className={`tab ${tab === "whitelist" ? "isActive" : ""}`}
             onClick={() => go("whitelist")}
           >
@@ -152,6 +163,7 @@ export default function App() {
 
           <button
             type="button"
+            data-tab="camera"
             className={`tab ${tab === "camera" ? "isActive" : ""}`}
             onClick={() => go("camera")}
           >
@@ -160,6 +172,7 @@ export default function App() {
 
           <button
             type="button"
+            data-tab="events"
             className={`tab ${tab === "events" ? "isActive" : ""}`}
             onClick={() => go("events")}
           >
@@ -168,6 +181,7 @@ export default function App() {
 
           <button
             type="button"
+            data-tab="settings"
             className={`tab ${tab === "settings" ? "isActive" : ""}`}
             onClick={() => go("settings")}
           >
@@ -176,6 +190,7 @@ export default function App() {
 
           <button
             type="button"
+            data-tab="system"
             className={`tab ${tab === "system" ? "isActive" : ""}`}
             onClick={() => go("system")}
           >
@@ -184,6 +199,7 @@ export default function App() {
 
           <button
             type="button"
+            data-tab="help"
             className={`tab ${tab === "help" ? "isActive" : ""}`}
             onClick={() => go("help")}
           >

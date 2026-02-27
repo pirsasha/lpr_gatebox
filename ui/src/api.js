@@ -88,6 +88,10 @@ export function rtspBoxes() {
   return apiGet(`${API_LEGACY}/rtsp/boxes`);
 }
 
+export function rtspSnapshot() {
+  return apiPost(`${API_V1}/rtsp/snapshot`, {});
+}
+
 // Whitelist (v1)
 export function reloadWhitelist() {
   return apiPost(`${API_V1}/whitelist/reload`);
@@ -104,6 +108,10 @@ export function putWhitelist(plates) {
 // Settings (v1) — продуктово
 export function getSettings() {
   return apiGet(`${API_V1}/settings`);
+}
+
+export function getRtspWorkerCapabilities() {
+  return apiGet(`${API_V1}/rtsp_worker/capabilities`);
 }
 
 export function putSettings(partial) {

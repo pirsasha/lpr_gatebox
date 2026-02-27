@@ -20,6 +20,8 @@ import json
 import copy
 import asyncio
 import re
+import shutil
+from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeoutError
 from pathlib import Path
 from typing import Any, Callable, Dict, Optional, Tuple
 
@@ -155,6 +157,7 @@ LIVE_META_PATH = LIVE_DIR / "meta.json"
 LIVE_BOXES_PATH = LIVE_DIR / "boxes.json"
 RECENT_PLATES_DIR = Path(os.environ.get("RECENT_PLATES_DIR", "/config/live/recent_plates"))
 RECENT_PLATES_INDEX = RECENT_PLATES_DIR / "index.json"
+DEBUG_SNAPSHOT_DIR = Path(os.environ.get("DEBUG_SNAPSHOT_DIR", "/debug"))
 
 
 def _read_json(path: Path, default: Dict[str, Any]) -> Dict[str, Any]:
@@ -222,6 +225,41 @@ def api_recent_plate_image(filename: str):
     path = RECENT_PLATES_DIR / name
     if not path.exists() or not path.is_file():
         raise HTTPException(status_code=404, detail="image not found")
+    return FileResponse(str(path), media_type="image/jpeg")
+
+
+@router.post("/rtsp/snapshot")
+def api_rtsp_snapshot():
+    """Сохраняет текущий live frame в debug dir и возвращает имя файла."""
+    if not LIVE_FRAME_PATH.exists():
+        return {"ok": False, "error": "no_frame"}
+    try:
+        DEBUG_SNAPSHOT_DIR.mkdir(parents=True, exist_ok=True)
+        ts = int(time.time() * 1000)
+        name = f"rtsp_snapshot_{ts}.jpg"
+        dst = DEBUG_SNAPSHOT_DIR / name
+        shutil.copyfile(str(LIVE_FRAME_PATH), str(dst))
+        return {
+            "ok": True,
+            "filename": name,
+            "url": f"/api/v1/rtsp/snapshot/{name}",
+            "saved_path": str(dst),
+        }
+    except Exception as e:
+        return {"ok": False, "error": "snapshot_failed", "detail": str(e)}
+
+
+@router.get("/rtsp/snapshot/{filename}")
+def api_rtsp_snapshot_image(filename: str):
+    safe = os.path.basename(str(filename or "")).strip()
+    if not safe:
+        raise HTTPException(status_code=400, detail="bad filename")
+    path = (DEBUG_SNAPSHOT_DIR / safe).resolve()
+    root = DEBUG_SNAPSHOT_DIR.resolve()
+    if root not in path.parents and path != root:
+        raise HTTPException(status_code=400, detail="bad path")
+    if not path.exists() or not path.is_file():
+        raise HTTPException(status_code=404, detail="snapshot not found")
     return FileResponse(str(path), media_type="image/jpeg")
 
 
@@ -651,6 +689,73 @@ def _validate_settings_patch(patch: Dict[str, Any]) -> None:
 
 
 
+
+
+# rtsp_worker override classification for UI contract
+_RTSP_HOT_OVERRIDES = {
+    "READ_FPS", "DET_FPS", "SEND_FPS",
+    "DET_CONF", "DET_IOU", "DET_IMG_SIZE",
+    "PLATE_PAD", "PLATE_PAD_BASE", "PLATE_PAD_SMALL", "PLATE_PAD_SMALL_W", "PLATE_PAD_SMALL_H", "PLATE_PAD_MAX",
+    "RECTIFY", "RECTIFY_W", "RECTIFY_H",
+    "REFINE_INNER_PAD", "REFINE_MIN_AREA_RATIO",
+    "DESKEW_ENABLE", "DESKEW_MAX_ANGLE_DEG", "DESKEW_MIN_ANGLE_DEG",
+    "UPSCALE_ENABLE", "UPSCALE_MIN_W", "UPSCALE_MIN_H",
+    "JPEG_QUALITY",
+    "SAVE_DIR", "SAVE_EVERY", "SAVE_FULL_FRAME", "SAVE_WITH_ROI",
+    "LOG_EVERY_SEC",
+    "SANITY_ASPECT_MIN_BASE", "SANITY_ASPECT_MIN_ADAPTIVE",
+    "SANITY_ADAPTIVE_CONF_MIN", "SANITY_ADAPTIVE_AREA_MIN",
+    "SANITY_MIN_WIDTH_PX", "SANITY_MIN_HEIGHT_PX",
+    "SANITY_DEBUG_REJECT_EVERY_SEC",
+    "ROI_STR", "ROI_POLY_STR",
+}
+
+# сохраняются в settings.json, но требуют ручного рестарта/перезапуска worker
+_RTSP_RESTART_ONLY_OVERRIDES = {
+    "AUTO_MODE", "AUTO_DROP_ON_BLUR", "AUTO_DROP_ON_GLARE",
+    "AUTO_RECTIFY", "AUTO_PAD_ENABLE", "AUTO_UPSCALE_ENABLE",
+    "TRACK_ENABLE", "FREEZE_ENABLE",
+    "RTSP_TRANSPORT", "LIVE_DRAW_YOLO", "LIVE_SAVE_QUAD",
+}
+
+
+def _classify_rtsp_overrides(settings_patch: Dict[str, Any]) -> Dict[str, list[str]]:
+    rt = settings_patch.get("rtsp_worker") if isinstance(settings_patch, dict) else None
+    ov = rt.get("overrides") if isinstance(rt, dict) else None
+    if not isinstance(ov, dict):
+        return {"applied": [], "queued_restart": [], "unknown": []}
+
+    applied: list[str] = []
+    queued_restart: list[str] = []
+    unknown: list[str] = []
+
+    for k in ov.keys():
+        key = str(k)
+        if key in _RTSP_HOT_OVERRIDES:
+            applied.append(key)
+        elif key in _RTSP_RESTART_ONLY_OVERRIDES:
+            queued_restart.append(key)
+        else:
+            unknown.append(key)
+
+    return {
+        "applied": sorted(set(applied)),
+        "queued_restart": sorted(set(queued_restart)),
+        "unknown": sorted(set(unknown)),
+    }
+
+
+@router.get("/rtsp_worker/capabilities")
+def api_rtsp_worker_capabilities():
+    """Source-of-truth for UI: which rtsp_worker.overrides keys are supported and how they apply."""
+    return {
+        "ok": True,
+        "overrides": {
+            "hot_apply": sorted(_RTSP_HOT_OVERRIDES),
+            "restart_required": sorted(_RTSP_RESTART_ONLY_OVERRIDES),
+        },
+    }
+
 def _drop_empty_cloudpub_access_key(patch: Dict[str, Any]) -> Dict[str, Any]:
     """cloudpub.access_key == '' или masked '***' не должны затирать сохранённый ключ."""
     if not isinstance(patch, dict):
@@ -689,8 +794,9 @@ def api_put_settings(patch: Dict[str, Any]):
     data_in = _drop_empty_mqtt_pass(data_in)
     data_in = _drop_empty_cloudpub_access_key(data_in)
     _validate_settings_patch(data_in)
+    overrides_apply = _classify_rtsp_overrides(data_in)
     data = st.update(data_in)
-    return {"ok": True, "settings": _mask_settings_for_get(data)}
+    return {"ok": True, "settings": _mask_settings_for_get(data), "overrides_apply": overrides_apply}
 
 
 @router.post("/settings/reset")
@@ -985,6 +1091,34 @@ def api_reload_whitelist():
 # Camera RTSP test endpoint (UI)
 # =========================================================
 
+
+_CAMERA_TEST_EXECUTOR = ThreadPoolExecutor(max_workers=2, thread_name_prefix="camera_test")
+
+
+def _camera_probe_once(rtsp_url: str) -> Dict[str, Any]:
+    import cv2  # локально, чтобы не грузить лишнее при старте
+
+    start = time.time()
+    cap = cv2.VideoCapture(rtsp_url)
+    try:
+        if not cap.isOpened():
+            return {"ok": False, "error": "cannot_open_stream"}
+
+        cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
+        ret, frame = cap.read()
+        if not ret or frame is None:
+            return {"ok": False, "error": "cannot_read_frame"}
+
+        h, w = frame.shape[:2]
+        elapsed = int((time.time() - start) * 1000)
+        return {"ok": True, "width": w, "height": h, "grab_ms": elapsed}
+    finally:
+        try:
+            cap.release()
+        except Exception:
+            pass
+
+
 class CameraTestIn(BaseModel):
     rtsp_url: str | None = None
     timeout_sec: float = 5.0
@@ -994,12 +1128,11 @@ class CameraTestIn(BaseModel):
 @router.post("/camera/test")
 def camera_test(data: CameraTestIn):
     """
-    Проверка RTSP потока:
+    Проверка RTSP потока с fail-fast timeout:
     - открываем камеру
     - читаем 1 кадр
+    - ограничиваем ожидание по timeout_sec
     """
-    import cv2  # локально, чтобы не грузить лишнее при старте
-
     if data.use_settings:
         try:
             settings = _require_store().get()
@@ -1012,19 +1145,17 @@ def camera_test(data: CameraTestIn):
     if not rtsp_url:
         return {"ok": False, "error": "rtsp_url_not_set"}
 
-    start = time.time()
+    try:
+        timeout_sec = float(data.timeout_sec)
+    except Exception:
+        timeout_sec = 5.0
+    timeout_sec = max(0.5, min(15.0, timeout_sec))
 
-    cap = cv2.VideoCapture(rtsp_url)
-    if not cap.isOpened():
-        return {"ok": False, "error": "cannot_open_stream"}
-
-    cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
-    ret, frame = cap.read()
-    cap.release()
-
-    if not ret or frame is None:
-        return {"ok": False, "error": "cannot_read_frame"}
-
-    h, w = frame.shape[:2]
-    elapsed = int((time.time() - start) * 1000)
-    return {"ok": True, "width": w, "height": h, "grab_ms": elapsed}
+    fut = _CAMERA_TEST_EXECUTOR.submit(_camera_probe_once, str(rtsp_url))
+    try:
+        return fut.result(timeout=timeout_sec)
+    except FuturesTimeoutError:
+        fut.cancel()
+        return {"ok": False, "error": "timeout", "timeout_sec": timeout_sec}
+    except Exception as e:
+        return {"ok": False, "error": "probe_exception", "detail": str(e)}
