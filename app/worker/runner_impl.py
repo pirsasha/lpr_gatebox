@@ -16,6 +16,7 @@
 from __future__ import annotations
 
 import os
+import re
 import time
 from typing import Dict, List, Optional, Tuple
 
@@ -137,6 +138,15 @@ _OVERRIDABLE: dict[str, tuple[str, callable]] = {
     "SAVE_WITH_ROI": ("bool", lambda v: bool(int(v)) if isinstance(v, (int, str)) else bool(v)),
     "LOG_EVERY_SEC": ("float", float),
 
+    # Sanity filter knobs (plate shape/size gate)
+    "SANITY_ASPECT_MIN_BASE": ("float", float),
+    "SANITY_ASPECT_MIN_ADAPTIVE": ("float", float),
+    "SANITY_ADAPTIVE_CONF_MIN": ("float", float),
+    "SANITY_ADAPTIVE_AREA_MIN": ("float", float),
+    "SANITY_MIN_WIDTH_PX": ("int", int),
+    "SANITY_MIN_HEIGHT_PX": ("int", int),
+    "SANITY_DEBUG_REJECT_EVERY_SEC": ("float", float),
+
     # ROI (scene crop)
     "ROI_STR": ("str", str),
     "ROI_POLY_STR": ("str", str),
@@ -241,9 +251,22 @@ RECTIFY_H = env_int("RECTIFY_H", 96)
 
 # Tracking
 TRACK_ENABLE = env_bool("TRACK_ENABLE", True)
-TRACK_HOLD_SEC = env_float("TRACK_HOLD_SEC", 1.0)
-TRACK_ALPHA = env_float("TRACK_ALPHA", 0.65)
-TRACK_IOU_MIN = env_float("TRACK_IOU_MIN", 0.10)
+TRACK_HOLD_SEC = env_float("TRACK_HOLD_SEC", 1.6)
+TRACK_ALPHA = env_float("TRACK_ALPHA", 0.75)
+TRACK_IOU_MIN = env_float("TRACK_IOU_MIN", 0.18)
+
+# Stabilization strategy
+STAB_MODE = env_str("STAB_MODE", "track").strip().lower()
+if STAB_MODE not in ("track", "plate", "hybrid"):
+    STAB_MODE = "track"
+
+# Best-crop buffering (optional): choose best crop in short window before sending
+BEST_CROP_ENABLE = env_bool("BEST_CROP_ENABLE", False)
+BEST_CROP_WINDOW_SEC = env_float("BEST_CROP_WINDOW_SEC", 1.5)
+BEST_CROP_MAX_SEND = env_int("BEST_CROP_MAX_SEND", 1)
+
+# Decision log rate-limit
+DECISION_LOG_EVERY_SEC = env_float("DECISION_LOG_EVERY_SEC", 2.0)
 
 # Event mode
 EVENT_MODE = env_str("EVENT_MODE", "on_plate_change").lower()
@@ -279,6 +302,13 @@ LIVE_DIR = env_str("LIVE_DIR", "/config/live")
 LIVE_EVERY_SEC = env_float("LIVE_EVERY_SEC", 1.0)
 LIVE_JPEG_QUALITY = env_int("LIVE_JPEG_QUALITY", 80)
 LIVE_SAVE_QUAD = env_bool("LIVE_SAVE_QUAD", True)
+SANITY_ASPECT_MIN_BASE = env_float("SANITY_ASPECT_MIN_BASE", 1.80)
+SANITY_ASPECT_MIN_ADAPTIVE = env_float("SANITY_ASPECT_MIN_ADAPTIVE", 1.60)
+SANITY_ADAPTIVE_CONF_MIN = env_float("SANITY_ADAPTIVE_CONF_MIN", 0.75)
+SANITY_ADAPTIVE_AREA_MIN = env_float("SANITY_ADAPTIVE_AREA_MIN", 0.0065)
+SANITY_MIN_WIDTH_PX = env_int("SANITY_MIN_WIDTH_PX", 140)
+SANITY_MIN_HEIGHT_PX = env_int("SANITY_MIN_HEIGHT_PX", 60)
+SANITY_DEBUG_REJECT_EVERY_SEC = env_float("SANITY_DEBUG_REJECT_EVERY_SEC", 3.0)
 
 # RTSP watchdog/freeze
 RTSP_TRANSPORT = env_str("RTSP_TRANSPORT", "tcp").lower()
@@ -344,27 +374,72 @@ def choose_plate_pad(bbox_w: int, bbox_h: int) -> Tuple[float, str]:
     return float(pad), str(reason)
 
 
+def _plate_norm(plate: str) -> str:
+    return re.sub(r"[^A-Z0-9]", "", str(plate or "").upper())
+
+
+def _sharpness_score(img: Optional[np.ndarray]) -> float:
+    if img is None or img.size <= 0:
+        return 0.0
+    try:
+        g = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY) if len(img.shape) == 3 else img
+        return float(cv2.Laplacian(g, cv2.CV_64F).var())
+    except Exception:
+        return 0.0
+
+
 def rectify_plate(crop_bgr: np.ndarray, out_w: int, out_h: int) -> Optional[np.ndarray]:
     warped, _quad = rectify_plate_quad(crop_bgr, out_w=out_w, out_h=out_h)
     return warped
 
 
-def sanity_check_crop(img: np.ndarray) -> tuple[bool, str]:
+def sanity_check_crop(
+    img: np.ndarray,
+    det_conf: Optional[float] = None,
+    bbox_wh: Optional[Tuple[int, int]] = None,
+    frame_wh: Optional[Tuple[int, int]] = None,
+) -> tuple[bool, str, Dict[str, float | str]]:
+    metrics: Dict[str, float | str] = {}
     try:
         hh, ww = img.shape[:2]
     except Exception:
-        return False, "invalid_shape"
+        return False, "invalid_shape", {"rule": "invalid_shape"}
 
-    if ww < int(MIN_PLATE_W) or hh < int(MIN_PLATE_H):
-        return False, f"too_small:{ww}x{hh}<min{int(MIN_PLATE_W)}x{int(MIN_PLATE_H)}"
-
+    metrics["crop_w"] = float(ww)
+    metrics["crop_h"] = float(hh)
     ar = float(ww) / float(max(1, hh))
-    if ar < 1.8:
-        return False, f"bad_aspect_low:{ar:.3f}<1.8"
-    if ar > 8.0:
-        return False, f"bad_aspect_high:{ar:.3f}>8.0"
+    metrics["aspect"] = float(ar)
+    metrics["det_conf"] = float(det_conf) if det_conf is not None else -1.0
 
-    return True, "ok"
+    if ww < int(SANITY_MIN_WIDTH_PX) or hh < int(SANITY_MIN_HEIGHT_PX):
+        metrics["rule"] = "too_small"
+        return False, f"too_small:{ww}x{hh}<min{int(SANITY_MIN_WIDTH_PX)}x{int(SANITY_MIN_HEIGHT_PX)}", metrics
+
+    # base threshold keeps strict filtering for low-confidence/small detections
+    ar_min = float(SANITY_ASPECT_MIN_BASE)
+    rule = "base"
+    if det_conf is not None:
+        bw, bh = (bbox_wh or (ww, hh))
+        frame_w, frame_h = (frame_wh or (0, 0))
+        bbox_area_ratio = 0.0
+        if frame_w > 0 and frame_h > 0:
+            bbox_area_ratio = float(max(1, bw) * max(1, bh)) / float(frame_w * frame_h)
+        metrics["bbox_area_ratio"] = float(bbox_area_ratio)
+
+        # Adaptive relax: high-confidence + non-tiny bbox may pass with slightly lower AR
+        if float(det_conf) >= float(SANITY_ADAPTIVE_CONF_MIN) and bbox_area_ratio >= float(SANITY_ADAPTIVE_AREA_MIN):
+            ar_min = float(SANITY_ASPECT_MIN_ADAPTIVE)
+            rule = "adaptive_high_conf"
+
+    metrics["aspect_min"] = float(ar_min)
+    metrics["rule"] = rule
+
+    if ar < ar_min:
+        return False, f"bad_aspect_low:{ar:.3f}<{ar_min:.2f};rule={rule}", metrics
+    if ar > 8.0:
+        return False, f"bad_aspect_high:{ar:.3f}>8.0", metrics
+
+    return True, "ok", metrics
 
 
 def maybe_upscale(img: np.ndarray, min_w: int, min_h: int, enable: bool) -> np.ndarray:
@@ -617,6 +692,9 @@ def main() -> None:
     auto_metrics: Dict[str, float] = {}
 
     runtime_overrides_last: dict = {}
+    last_unsane_dump_ts = 0.0
+    last_decision_log_ts = 0.0
+    best_crop_buf: List[Dict[str, object]] = []
     roi_poly: List[Tuple[int, int]] = parse_roi_poly_str(str(ROI_POLY_STR or ""), max(1, w), max(1, h)) if (w > 0 and h > 0) else []
 
     while True:
@@ -876,6 +954,7 @@ def main() -> None:
         pre_variant = "none"
         pre_warped = False
         sanity_fail_reason = "not_applicable"
+        sanity_metrics: Dict[str, float | str] = {}
 
         pad_used_tick = float(PLATE_PAD_BASE)
         pad_reason_tick = "n/a"
@@ -990,11 +1069,32 @@ def main() -> None:
                 pre_warped = False
 
         if crop_to_send is not None and crop_to_send.size > 0:
-            sanity_ok_tick, sanity_fail_reason = sanity_check_crop(crop_to_send)
+            sanity_ok_tick, sanity_fail_reason, sanity_metrics = sanity_check_crop(
+                crop_to_send,
+                det_conf=(best_full.conf if best_full is not None else None),
+                bbox_wh=bbox_wh_tick,
+                frame_wh=(w, h),
+            )
             if not sanity_ok_tick:
+                rejected_crop = crop_to_send
                 crop_to_send = None
                 pre_variant = "rejected_unsane"
                 pre_warped = False
+
+                if (now - float(last_unsane_dump_ts)) >= float(SANITY_DEBUG_REJECT_EVERY_SEC):
+                    try:
+                        stamp = int(now * 1000)
+                        vis = frame.copy()
+                        if best_full is not None:
+                            cv2.rectangle(vis, (best_full.x1, best_full.y1), (best_full.x2, best_full.y2), (0, 140, 255), 2)
+                        txt = f"{sanity_fail_reason} conf={float(best_full.conf) if best_full is not None else -1:.2f}"
+                        cv2.putText(vis, txt[:180], (16, 28), cv2.FONT_HERSHEY_SIMPLEX, 0.55, (0, 140, 255), 2, cv2.LINE_AA)
+                        cv2.imwrite(os.path.join(SAVE_DIR, f"unsane_frame_vis_{stamp}.jpg"), vis)
+                        if rejected_crop is not None and rejected_crop.size > 0:
+                            cv2.imwrite(os.path.join(SAVE_DIR, f"unsane_crop_{stamp}.jpg"), rejected_crop)
+                        last_unsane_dump_ts = now
+                    except Exception:
+                        pass
         else:
             sanity_fail_reason = "no_candidate_crop"
 
@@ -1025,25 +1125,63 @@ def main() -> None:
 
         # SEND decision
         want_send = False
+        send_reason = "no_crop"
         if crop_to_send is not None and crop_to_send.size > 0:
             if EVENT_MODE == "always":
                 want_send = True
+                send_reason = "event_mode_always"
             elif EVENT_MODE == "on_new_track":
                 want_send = bool(track_new)
+                send_reason = "new_track" if want_send else "same_track"
             elif EVENT_MODE in ("on_plate_change", "on_plate_confirmed"):
-                if track_new:
+                if STAB_MODE in ("track", "hybrid") and track_new:
                     want_send = True
+                    send_reason = "track_new"
                 else:
                     last = events.last_seen_plate
                     if not last:
                         want_send = True
+                        send_reason = "first_plate"
                     else:
                         want_send = bool(events.can_send_plate(now, last))
+                        send_reason = "plate_resend_ready" if want_send else "plate_resend_cooldown"
 
         if want_send and not events.can_send_global(now):
             want_send = False
+            send_reason = "global_throttle"
         if want_send and now < next_send_ts:
             want_send = False
+            send_reason = "send_fps_throttle"
+
+        best_crop_score = 0.0
+        if crop_to_send is not None and crop_to_send.size > 0 and BEST_CROP_ENABLE:
+            try:
+                area_ratio = float((crop_to_send.shape[0] * crop_to_send.shape[1]) / max(1.0, float(w * h)))
+                det_conf = float(best_full.conf) if best_full is not None else 0.0
+                sharp = _sharpness_score(crop_to_send)
+                best_crop_score = float(det_conf * area_ratio * max(1.0, min(1000.0, sharp)))
+                best_crop_buf.append({
+                    "ts": float(now),
+                    "crop": crop_to_send.copy(),
+                    "score": best_crop_score,
+                    "pre_variant": str(pre_variant),
+                    "pre_warped": bool(pre_warped),
+                })
+            except Exception:
+                pass
+
+            win = max(0.3, float(BEST_CROP_WINDOW_SEC))
+            best_crop_buf = [x for x in best_crop_buf if (now - float(x.get("ts", now))) <= win]
+
+            if want_send and best_crop_buf:
+                best_crop_buf.sort(key=lambda x: float(x.get("score", 0.0)), reverse=True)
+                chosen = best_crop_buf[: max(1, int(BEST_CROP_MAX_SEND))]
+                pick = chosen[0]
+                crop_to_send = pick.get("crop") if isinstance(pick.get("crop"), np.ndarray) else crop_to_send
+                pre_variant = str(pick.get("pre_variant") or pre_variant)
+                pre_warped = bool(pick.get("pre_warped"))
+                send_reason = f"best_crop(score={float(pick.get('score', 0.0)):.4f})"
+                best_crop_buf = []
 
         resp = None
         jpeg_bytes_sent: Optional[bytes] = None
@@ -1084,21 +1222,29 @@ def main() -> None:
                 plate = str(resp.get("plate", "") or "")
                 valid = bool(resp.get("valid", False))
 
+            plate_norm = _plate_norm(plate)
             if plate and valid:
-                events.mark_seen(now, plate)
+                events.mark_seen(now, plate_norm)
 
             if EVENT_MODE == "on_plate_change":
                 if plate and valid:
-                    if plate != events.last_sent_plate:
-                        events.mark_sent(now, plate)
+                    if plate_norm != events.last_sent_plate:
+                        events.mark_sent(now, plate_norm)
                     else:
-                        if events.can_send_plate(now, plate):
-                            events.mark_sent(now, plate)
+                        if events.can_send_plate(now, plate_norm):
+                            events.mark_sent(now, plate_norm)
             elif EVENT_MODE == "on_plate_confirmed":
                 if plate and valid:
-                    hits = events.note_plate(now, plate)
-                    if hits >= PLATE_CONFIRM_K and events.can_send_plate(now, plate):
-                        events.mark_sent(now, plate)
+                    hits = events.note_plate(now, plate_norm)
+                    if hits >= PLATE_CONFIRM_K and events.can_send_plate(now, plate_norm):
+                        events.mark_sent(now, plate_norm)
+
+            if STAB_MODE in ("plate", "hybrid") and plate and valid:
+                _ = events.note_plate(now, plate_norm)
+
+        if DECISION_LOG_EVERY_SEC > 0 and (now - last_decision_log_ts) >= DECISION_LOG_EVERY_SEC:
+            print(f"[rtsp_worker] decision send={int(want_send)} reason={send_reason} mode={EVENT_MODE}/{STAB_MODE} track_new={int(track_new)} best_score={best_crop_score:.4f}")
+            last_decision_log_ts = now
 
         # heartbeat
         if HB_EVERY_SEC > 0 and (now - hb_last) >= HB_EVERY_SEC:
@@ -1232,6 +1378,12 @@ def main() -> None:
                 f"grab_age_ms={grab_age_ms:.1f} url={current_rtsp_url} variant={pre_variant} "
                 f"pad_used={last_pad_used:.3f} pad_reason={last_pad_reason} bbox={last_bbox_wh[0]}x{last_bbox_wh[1]} "
                 f"sanity={sanity_fail_reason} "
+                f"aspect={float(sanity_metrics.get('aspect', -1.0)):.3f} "
+                f"thr={float(sanity_metrics.get('aspect_min', -1.0)):.2f} "
+                f"area={float(sanity_metrics.get('bbox_area_ratio', -1.0)):.4f} "
+                f"w={int(float(sanity_metrics.get('crop_w', -1.0)))} h={int(float(sanity_metrics.get('crop_h', -1.0)))} "
+                f"conf={float(sanity_metrics.get('det_conf', -1.0)):.2f} "
+                f"rule={str(sanity_metrics.get('rule', '-'))} "
                 f"auto={int(auto_cfg.enable)} preproc={int(AUTO_PREPROC_ENABLE)} profile={auto_profile} "
                 f"auto_src={AUTO_METRICS_SOURCE} deskew={int(DESKEW_ENABLE)}"
             )
