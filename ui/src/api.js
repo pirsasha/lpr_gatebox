@@ -79,6 +79,10 @@ export function getRtspStatus() {
   return apiGet(`${API_LEGACY}/rtsp/status`);
 }
 
+export function getSystemHealth() {
+  return apiGet(`${API_V1}/system/health`);
+}
+
 export function rtspFrameUrl(ts) {
   const q = ts ? `?ts=${encodeURIComponent(String(ts))}` : "";
   return apiUrl(`${API_LEGACY}/rtsp/frame.jpg${q}`);
@@ -86,6 +90,10 @@ export function rtspFrameUrl(ts) {
 
 export function rtspBoxes() {
   return apiGet(`${API_LEGACY}/rtsp/boxes`);
+}
+
+export function rtspSnapshot() {
+  return apiPost(`${API_V1}/rtsp/snapshot`, {});
 }
 
 // Whitelist (v1)
@@ -104,6 +112,10 @@ export function putWhitelist(plates) {
 // Settings (v1) — продуктово
 export function getSettings() {
   return apiGet(`${API_V1}/settings`);
+}
+
+export function getRtspWorkerCapabilities() {
+  return apiGet(`${API_V1}/rtsp_worker/capabilities`);
 }
 
 export function putSettings(partial) {
