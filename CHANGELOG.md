@@ -11,6 +11,7 @@
 - Dashboard mobile overflow: constrained home layout width (`min-width:0`), made recent-plates grid responsive, and wrapped events table in local horizontal scroll to prevent whole-page overflow on narrow screens.
 
 
+
 ## v0.4.2 — 2026-02-27
 ### Changed
 - Mobile navbar/tabs are now responsive: horizontal in-place scroll on screens <=768px with active-tab auto-scroll into view, while desktop layout remains single-line.
@@ -19,6 +20,7 @@
 ## v0.4.1 — 2026-02-27
 ### Changed
 - Dashboard (home) now renders RTSP preview with YOLO bbox overlay (same live frame + boxes endpoints as camera UI), with responsive layout tuned for desktop/mobile.
+
 
 
 ## v0.4.0 — 2026-02-27
@@ -30,6 +32,7 @@
 ## v0.3.28 — 2026-02-27
 ### Fixed
 - `rtsp_worker` HTTP client switched to pooled `requests.Session` with keep-alive for settings/heartbeat/infer calls, plus bounded timeout normalization to reduce stuck network calls and TCP reconnect overhead.
+
 
 
 ## v0.3.27 — 2026-02-27
