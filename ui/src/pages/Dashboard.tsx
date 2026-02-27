@@ -31,6 +31,8 @@ type RtspStatus = {
   age_ms?: number;
   frozen?: boolean;
   fps?: number;
+  note?: string;
+  errors?: number;
 };
 
 function Badge({ tone, children }: { tone: "green" | "red" | "blue" | "gray" | "yellow"; children: React.ReactNode }) {
@@ -161,6 +163,14 @@ export default function DashboardPage() {
     return <Badge tone="green">работает</Badge>;
   }, [rtsp]);
 
+  const health = useMemo(() => {
+    const gateboxOnline = !err;
+    const workerOnline = !!rtsp?.alive;
+    const hbAge = typeof rtsp?.age_ms === "number" ? `${rtsp.age_ms}мс` : "—";
+    const lastError = err || sseErr || (workerOnline ? "—" : (rtsp?.note || "worker_offline"));
+    return { gateboxOnline, workerOnline, hbAge, lastError };
+  }, [err, sseErr, rtsp]);
+
   const frameOverlay = useMemo(() => {
     const w = Number(boxes?.w || 0);
     const h = Number(boxes?.h || 0);
@@ -211,6 +221,16 @@ export default function DashboardPage() {
                 <span className="muted">События:</span>
                 {sseOnline ? <Badge tone="green">онлайн</Badge> : <Badge tone="red">нет связи</Badge>}
               </div>
+            </div>
+
+            <div className="hint" style={{ marginTop: 8 }}>
+              <div className="row" style={{ gap: 8, flexWrap: "wrap" }}>
+                <span className="muted">Health:</span>
+                <span className={`badge ${health.gateboxOnline ? "badge-green" : "badge-red"}`}>gatebox {health.gateboxOnline ? "online" : "offline"}</span>
+                <span className={`badge ${health.workerOnline ? "badge-green" : "badge-red"}`}>worker {health.workerOnline ? "online" : "offline"}</span>
+                <span className="badge">hb_age {health.hbAge}</span>
+              </div>
+              <div className="muted mono" style={{ marginTop: 4 }}>last_error: {String(health.lastError || "—")}</div>
             </div>
 
             <div className="frameWrap dashboardPreviewWrap" style={{ marginTop: 8 }}>
