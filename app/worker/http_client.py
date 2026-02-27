@@ -159,12 +159,10 @@ def post_crop(
     return r.json(), jpeg_bytes
     
 def fetch_settings(settings_base_url: str) -> dict:
-    """Получить весь settings.json через gatebox UI API.
-    Бэкенд отдаёт формат: { ok: true, settings: {...} }.
+    """Legacy-обёртка: получить весь settings.json через gatebox UI API.
+
+    FIX: раньше вызывался несуществующий `http_get_json` (NameError).
+    Используем единую рабочую реализацию `fetch_settings_json()`.
     """
-    url = f"{settings_base_url.rstrip('/')}/settings"
-    data = http_get_json(url, timeout_sec=1.2)
-    if not isinstance(data, dict):
-        return {}
-    s = data.get("settings")
-    return s if isinstance(s, dict) else {}
+    data = fetch_settings_json(settings_base_url, timeout_sec=1.2)
+    return data if isinstance(data, dict) else {}
