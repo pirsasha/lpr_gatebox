@@ -1,5 +1,5 @@
 import React, { useEffect, useMemo, useState } from "react";
-import { addWhitelistPlate, getRecentPlates, getRtspStatus, rtspBoxes, rtspFrameUrl } from "../api";
+import { addWhitelistPlate, getRecentPlates, getRtspStatus, rtspBoxes, rtspFrameUrl, rtspSnapshot } from "../api";
 import { useEventsStream } from "../hooks/useEventsStream";
 
 type RecentPlateItem = {
@@ -56,6 +56,8 @@ export default function DashboardPage() {
   const [lastUpdate, setLastUpdate] = useState<number>(0);
   const [recent, setRecent] = useState<RecentPlateItem[]>([]);
   const [wlInfo, setWlInfo] = useState<string>("");
+  const [snapshotBusy, setSnapshotBusy] = useState<boolean>(false);
+  const [snapshotUrl, setSnapshotUrl] = useState<string>("");
 
   const { items: events, connected: sseOnline, error: sseErr } = useEventsStream({ includeDebug: false, limit: 40 });
 
@@ -144,6 +146,24 @@ export default function DashboardPage() {
     }
   }
 
+  async function onTakeSnapshot() {
+    try {
+      setSnapshotBusy(true);
+      const r = await rtspSnapshot();
+      if (r?.ok && r?.url) {
+        setSnapshotUrl(String(r.url));
+        setWlInfo(`Снимок сохранён: ${r.filename || r.url}`);
+      } else {
+        setWlInfo(`Снимок не сохранён: ${r?.error || "unknown_error"}`);
+      }
+    } catch (e: any) {
+      setWlInfo(`Снимок: ${e?.message || String(e)}`);
+    } finally {
+      setSnapshotBusy(false);
+      setTimeout(() => setWlInfo(""), 2200);
+    }
+  }
+
   const last = events?.[0];
 
   const rtspLine = useMemo(() => {
@@ -215,6 +235,9 @@ export default function DashboardPage() {
             <div className="row" style={{ justifyContent: "space-between" }}>
               <div className="muted">Обновлено: {lastUpdate ? new Date(lastUpdate).toLocaleTimeString() : "—"}</div>
               <div className="row" style={{ gap: 10 }}>
+                <button className="btn" type="button" disabled={snapshotBusy} onClick={onTakeSnapshot}>
+                  {snapshotBusy ? "Снимок…" : "Тестовый снимок"}
+                </button>
                 <button className="btn" type="button" onClick={() => setShowBbox((v) => !v)}>
                   BBox: {showBbox ? "ON" : "OFF"}
                 </button>
@@ -222,6 +245,12 @@ export default function DashboardPage() {
                 {sseOnline ? <Badge tone="green">онлайн</Badge> : <Badge tone="red">нет связи</Badge>}
               </div>
             </div>
+
+            {snapshotUrl ? (
+              <div className="hint" style={{ marginTop: 8 }}>
+                <a className="mono" href={snapshotUrl} target="_blank" rel="noreferrer">Открыть последний снимок</a>
+              </div>
+            ) : null}
 
             <div className="hint" style={{ marginTop: 8 }}>
               <div className="row" style={{ gap: 8, flexWrap: "wrap" }}>

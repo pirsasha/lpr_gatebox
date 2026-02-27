@@ -88,6 +88,19 @@ docker compose logs -f rtsp_worker | rg "cand_dbg|no_candidate_crop|rejected_uns
 
 ---
 
+## API: test snapshot from live frame
+
+Для быстрых проверок UI/камеры добавлен endpoint:
+
+- `POST /api/v1/rtsp/snapshot` — копирует текущий `LIVE_FRAME_PATH` в debug-директорию (по умолчанию `/debug`) и возвращает URL.
+- `GET /api/v1/rtsp/snapshot/{filename}` — выдаёт сохранённый snapshot JPG.
+
+ENV (optional):
+
+- `DEBUG_SNAPSHOT_DIR=/debug`
+
+---
+
 ## Быстрый старт (чистая установка на Linux/Proxmox)
 
 ### 1) Клонировать репозиторий

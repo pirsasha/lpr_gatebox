@@ -20,6 +20,7 @@ import json
 import copy
 import asyncio
 import re
+import shutil
 from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeoutError
 from pathlib import Path
 from typing import Any, Callable, Dict, Optional, Tuple
@@ -156,6 +157,7 @@ LIVE_META_PATH = LIVE_DIR / "meta.json"
 LIVE_BOXES_PATH = LIVE_DIR / "boxes.json"
 RECENT_PLATES_DIR = Path(os.environ.get("RECENT_PLATES_DIR", "/config/live/recent_plates"))
 RECENT_PLATES_INDEX = RECENT_PLATES_DIR / "index.json"
+DEBUG_SNAPSHOT_DIR = Path(os.environ.get("DEBUG_SNAPSHOT_DIR", "/debug"))
 
 
 def _read_json(path: Path, default: Dict[str, Any]) -> Dict[str, Any]:
@@ -223,6 +225,41 @@ def api_recent_plate_image(filename: str):
     path = RECENT_PLATES_DIR / name
     if not path.exists() or not path.is_file():
         raise HTTPException(status_code=404, detail="image not found")
+    return FileResponse(str(path), media_type="image/jpeg")
+
+
+@router.post("/rtsp/snapshot")
+def api_rtsp_snapshot():
+    """Сохраняет текущий live frame в debug dir и возвращает имя файла."""
+    if not LIVE_FRAME_PATH.exists():
+        return {"ok": False, "error": "no_frame"}
+    try:
+        DEBUG_SNAPSHOT_DIR.mkdir(parents=True, exist_ok=True)
+        ts = int(time.time() * 1000)
+        name = f"rtsp_snapshot_{ts}.jpg"
+        dst = DEBUG_SNAPSHOT_DIR / name
+        shutil.copyfile(str(LIVE_FRAME_PATH), str(dst))
+        return {
+            "ok": True,
+            "filename": name,
+            "url": f"/api/v1/rtsp/snapshot/{name}",
+            "saved_path": str(dst),
+        }
+    except Exception as e:
+        return {"ok": False, "error": "snapshot_failed", "detail": str(e)}
+
+
+@router.get("/rtsp/snapshot/{filename}")
+def api_rtsp_snapshot_image(filename: str):
+    safe = os.path.basename(str(filename or "")).strip()
+    if not safe:
+        raise HTTPException(status_code=400, detail="bad filename")
+    path = (DEBUG_SNAPSHOT_DIR / safe).resolve()
+    root = DEBUG_SNAPSHOT_DIR.resolve()
+    if root not in path.parents and path != root:
+        raise HTTPException(status_code=400, detail="bad path")
+    if not path.exists() or not path.is_file():
+        raise HTTPException(status_code=404, detail="snapshot not found")
     return FileResponse(str(path), media_type="image/jpeg")
 
 
