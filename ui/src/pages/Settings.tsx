@@ -1,5 +1,5 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
-import { getSettings, putSettings, applySettings, mqttCheck, mqttTestPublish, apiPost, telegramBotInfo, cloudpubStatus, cloudpubConnect, cloudpubDisconnect, cloudpubClearAudit } from "../api";
+import { getSettings, putSettings, applySettings, mqttCheck, mqttTestPublish, apiPost, telegramBotInfo, cloudpubStatus, cloudpubConnect, cloudpubDisconnect, cloudpubClearAudit, getRtspWorkerCapabilities } from "../api";
 
 type Settings = any;
 type SectionKey = "basic" | "advanced" | "diagnostics";
@@ -126,6 +126,8 @@ export default function SettingsPage() {
   const [cloudpubBusy, setCloudpubBusy] = useState(false);
   const [cloudpubMsg, setCloudpubMsg] = useState<string | null>(null);
   const [cloudpubState, setCloudpubState] = useState<any>(null);
+  const [overridesApply, setOverridesApply] = useState<{ applied: string[]; queued_restart: string[]; unknown: string[] } | null>(null);
+  const [rtspCaps, setRtspCaps] = useState<{ hot_apply: string[]; restart_required: string[] } | null>(null);
 
   const cloudpubStateLabel = (state: any) => {
     const st = String(state?.connection_state || "").toLowerCase();
@@ -172,6 +174,7 @@ export default function SettingsPage() {
       setDirty(false);
       setErr(null);
       setInfo(null);
+      setOverridesApply(null);
     } catch (e: any) {
       setErr(e?.message || String(e));
     }
@@ -181,6 +184,24 @@ export default function SettingsPage() {
     load();
     fetchBotInfo();
     fetchCloudpubStatus();
+
+    (async () => {
+      try {
+        const caps = await getRtspWorkerCapabilities();
+        const hot = Array.isArray(caps?.hot_apply)
+          ? caps.hot_apply
+          : (Array.isArray(caps?.overrides?.hot_apply) ? caps.overrides.hot_apply : []);
+        const restart = Array.isArray(caps?.restart_required)
+          ? caps.restart_required
+          : (Array.isArray(caps?.overrides?.restart_required) ? caps.overrides.restart_required : []);
+        setRtspCaps({
+          hot_apply: hot.map((x: any) => String(x)),
+          restart_required: restart.map((x: any) => String(x)),
+        });
+      } catch {
+        setRtspCaps(null);
+      }
+    })();
 
     const t = setInterval(() => {
       fetchCloudpubStatus();
@@ -306,11 +327,41 @@ export default function SettingsPage() {
 
   const onSave = async () => {
     try {
-      const r = await putSettings(settings);
+      const payload = JSON.parse(JSON.stringify(settings || {}));
+      const payloadOv = payload?.rtsp_worker?.overrides;
+      if (payloadOv && typeof payloadOv === "object" && rtspCaps) {
+        const allowed = new Set<string>([
+          ...((rtspCaps.hot_apply || []).map((x) => String(x))),
+          ...((rtspCaps.restart_required || []).map((x) => String(x))),
+        ]);
+        const clean: Record<string, any> = {};
+        for (const [k, v] of Object.entries(payloadOv)) {
+          if (allowed.has(String(k))) clean[String(k)] = v;
+        }
+        payload.rtsp_worker.overrides = clean;
+      }
+
+      const r = await putSettings(payload);
       setSettings(r.settings);
       setDirty(false);
       setErr(null);
-      setInfo("Сохранено в settings.json");
+
+      const ov = r?.overrides_apply;
+      if (ov && (Array.isArray(ov.applied) || Array.isArray(ov.queued_restart) || Array.isArray(ov.unknown))) {
+        const applied = Array.isArray(ov.applied) ? ov.applied : [];
+        const queued = Array.isArray(ov.queued_restart) ? ov.queued_restart : [];
+        const unknown = Array.isArray(ov.unknown) ? ov.unknown : [];
+        setOverridesApply({ applied, queued_restart: queued, unknown });
+
+        const parts: string[] = [];
+        if (applied.length) parts.push(`hot=${applied.length}`);
+        if (queued.length) parts.push(`restart=${queued.length}`);
+        if (unknown.length) parts.push(`unknown=${unknown.length}`);
+        setInfo(`Сохранено в settings.json${parts.length ? ` · overrides: ${parts.join(', ')}` : ""}`);
+      } else {
+        setOverridesApply(null);
+        setInfo("Сохранено в settings.json");
+      }
     } catch (e: any) {
       setErr(e?.message || String(e));
     }
@@ -480,6 +531,26 @@ export default function SettingsPage() {
         <div className="cardBody">
           {err ? <div className="alert alert-error mono">{err}</div> : null}
           {info ? <div className="alert mono">{info}</div> : null}
+
+          {overridesApply ? (
+            <div className="hint" style={{ marginBottom: 10 }}>
+              <div className="row" style={{ gap: 8, flexWrap: "wrap" }}>
+                <span className="badge badge-green">hot apply: {overridesApply.applied.length}</span>
+                <span className="badge badge-yellow">требует рестарт: {overridesApply.queued_restart.length}</span>
+                <span className="badge badge-red">unknown: {overridesApply.unknown.length}</span>
+              </div>
+              {overridesApply.queued_restart.length ? (
+                <div className="muted mono" style={{ marginTop: 4 }}>
+                  restart-only: {overridesApply.queued_restart.join(", ")}
+                </div>
+              ) : null}
+              {overridesApply.unknown.length ? (
+                <div className="muted mono" style={{ marginTop: 4 }}>
+                  unknown: {overridesApply.unknown.join(", ")}
+                </div>
+              ) : null}
+            </div>
+          ) : null}
 
           <div className="card" style={{ marginBottom: 12 }}>
             <div className="cardHead"><div className="cardTitle">Профили (день / ночь / свои)</div></div>
