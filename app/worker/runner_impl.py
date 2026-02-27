@@ -137,6 +137,15 @@ _OVERRIDABLE: dict[str, tuple[str, callable]] = {
     "SAVE_WITH_ROI": ("bool", lambda v: bool(int(v)) if isinstance(v, (int, str)) else bool(v)),
     "LOG_EVERY_SEC": ("float", float),
 
+    # Sanity filter knobs (plate shape/size gate)
+    "SANITY_ASPECT_MIN_BASE": ("float", float),
+    "SANITY_ASPECT_MIN_ADAPTIVE": ("float", float),
+    "SANITY_ADAPTIVE_CONF_MIN": ("float", float),
+    "SANITY_ADAPTIVE_AREA_MIN": ("float", float),
+    "SANITY_MIN_WIDTH_PX": ("int", int),
+    "SANITY_MIN_HEIGHT_PX": ("int", int),
+    "SANITY_DEBUG_REJECT_EVERY_SEC": ("float", float),
+
     # ROI (scene crop)
     "ROI_STR": ("str", str),
     "ROI_POLY_STR": ("str", str),
