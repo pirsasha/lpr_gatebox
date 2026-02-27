@@ -92,6 +92,7 @@ body{
   padding: 6px;
   border-radius: 999px;
   box-shadow: var(--shadow2);
+  max-width: 100%;
 }
 
 .tab{
@@ -283,6 +284,15 @@ body{
 .frameImg{ display:block; width: 100%; height: auto; }
 .frameOverlay{ position:absolute; inset:0; width:100%; height:100%; }
 
+.dashboardPreviewWrap{
+  aspect-ratio: 16 / 9;
+}
+.dashboardPreviewWrap .frameImg{
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
 .roiPoly{ fill: rgba(90,140,255,.14); stroke: rgba(90,140,255,.9); stroke-width:0.9; }
 .roiLine{ fill:none; stroke: rgba(90,140,255,.7); stroke-width:0.8; }
 .roiPt{ fill: rgba(90,140,255,.95); stroke: rgba(0,0,0,.6); stroke-width:0.4; }
@@ -310,6 +320,9 @@ body{
 }
 @media (max-width: 980px){
   .kvGrid{ grid-template-columns: 1fr; }
+  .dashboardPreviewWrap{
+    aspect-ratio: 4 / 3;
+  }
 }
 
 .kv{
@@ -337,4 +350,26 @@ body{
   overflow: auto;
   font-size: 12px;
   line-height: 1.35;
+}
+@media (max-width: 768px){
+  .topbar{
+    display:block;
+  }
+  .tabs{
+    margin-top: 10px;
+    overflow-x: auto;
+    overflow-y: hidden;
+    -webkit-overflow-scrolling: touch;
+    overscroll-behavior-x: contain;
+    scrollbar-width: none;
+    white-space: nowrap;
+    border-radius: 14px;
+    max-width: 100%;
+  }
+  .tabs::-webkit-scrollbar{
+    display: none;
+  }
+  .tab{
+    flex: 0 0 auto;
+  }
 }
