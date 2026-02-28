@@ -626,8 +626,33 @@ export default function SettingsPage() {
                 <div className="cardHead"><div className="cardTitle">RTSP worker / ключевые параметры</div></div>
                 <div className="cardBody">
                   <SliderRow label="READ_FPS" value={Number(ov.READ_FPS ?? 15)} min={1} max={30} step={1} onChange={(v) => patch("rtsp_worker.overrides.READ_FPS", v)} />
-                  <SliderRow label="DET_FPS" value={Number(ov.DET_FPS ?? 2)} min={1} max={15} step={0.5} onChange={(v) => patch("rtsp_worker.overrides.DET_FPS", v)} />
-                  <SliderRow label="SEND_FPS" value={Number(ov.SEND_FPS ?? 2.5)} min={0.5} max={15} step={0.5} onChange={(v) => patch("rtsp_worker.overrides.SEND_FPS", v)} />
+                  <SliderRow
+                    label="DET_FPS"
+                    value={Number(ov.DET_FPS ?? 2)}
+                    min={1}
+                    max={15}
+                    step={0.5}
+                    onChange={(v) => {
+                      patch("rtsp_worker.overrides.DET_FPS", v);
+                      const sendNow = Number(ov.SEND_FPS ?? 0);
+                      if (Number.isFinite(sendNow) && sendNow > Number(v)) {
+                        patch("rtsp_worker.overrides.SEND_FPS", Number(v));
+                      }
+                    }}
+                  />
+                  <SliderRow
+                    label="SEND_FPS"
+                    hint="Не может быть выше DET_FPS"
+                    value={Number(ov.SEND_FPS ?? 2.5)}
+                    min={0.5}
+                    max={15}
+                    step={0.5}
+                    onChange={(v) => {
+                      const detNow = Number(ov.DET_FPS ?? 2);
+                      const next = Number.isFinite(detNow) ? Math.min(Number(v), detNow) : Number(v);
+                      patch("rtsp_worker.overrides.SEND_FPS", next);
+                    }}
+                  />
                   <SliderRow label="Порог детекции (DET_CONF)" value={Number(ov.DET_CONF ?? 0.3)} min={0.05} max={0.95} step={0.01} onChange={(v) => patch("rtsp_worker.overrides.DET_CONF", v)} />
                   <ToggleRow label="Включить авто-режим день/ночь (AUTO_MODE)" checked={Number(ov.AUTO_MODE ?? 0) !== 0} onChange={(v) => patch("rtsp_worker.overrides.AUTO_MODE", v ? 1 : 0)} />
                   <ToggleRow label="Tracking" checked={Number(ov.TRACK_ENABLE ?? 1) !== 0} onChange={(v) => patch("rtsp_worker.overrides.TRACK_ENABLE", v ? 1 : 0)} />
