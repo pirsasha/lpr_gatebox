@@ -329,6 +329,17 @@ export default function SettingsPage() {
     try {
       const payload = JSON.parse(JSON.stringify(settings || {}));
       const payloadOv = payload?.rtsp_worker?.overrides;
+      const saveNotes: string[] = [];
+
+      if (payloadOv && typeof payloadOv === "object") {
+        const detFps = Number(payloadOv.DET_FPS);
+        const sendFps = Number(payloadOv.SEND_FPS);
+        if (Number.isFinite(detFps) && Number.isFinite(sendFps) && sendFps > detFps) {
+          payloadOv.SEND_FPS = detFps;
+          saveNotes.push(`SEND_FPS ограничен до DET_FPS (${detFps})`);
+        }
+      }
+
       if (payloadOv && typeof payloadOv === "object" && rtspCaps) {
         const allowed = new Set<string>([
           ...((rtspCaps.hot_apply || []).map((x) => String(x))),
@@ -357,10 +368,11 @@ export default function SettingsPage() {
         if (applied.length) parts.push(`hot=${applied.length}`);
         if (queued.length) parts.push(`restart=${queued.length}`);
         if (unknown.length) parts.push(`unknown=${unknown.length}`);
-        setInfo(`Сохранено в settings.json${parts.length ? ` · overrides: ${parts.join(', ')}` : ""}`);
+        const suffix = saveNotes.length ? ` · ${saveNotes.join("; ")}` : "";
+        setInfo(`Сохранено в settings.json${parts.length ? ` · overrides: ${parts.join(', ')}` : ""}${suffix}`);
       } else {
         setOverridesApply(null);
-        setInfo("Сохранено в settings.json");
+        setInfo(`Сохранено в settings.json${saveNotes.length ? ` · ${saveNotes.join("; ")}` : ""}`);
       }
     } catch (e: any) {
       setErr(e?.message || String(e));
@@ -540,9 +552,14 @@ export default function SettingsPage() {
                 <span className="badge badge-red">unknown: {overridesApply.unknown.length}</span>
               </div>
               {overridesApply.queued_restart.length ? (
-                <div className="muted mono" style={{ marginTop: 4 }}>
-                  restart-only: {overridesApply.queued_restart.join(", ")}
-                </div>
+                <>
+                  <div className="muted mono" style={{ marginTop: 4 }}>
+                    restart-only: {overridesApply.queued_restart.join(", ")}
+                  </div>
+                  <div className="muted" style={{ marginTop: 4 }}>
+                    Для применения restart-only параметров перезапусти сервис <span className="mono">rtsp_worker</span> (например: <span className="mono">docker compose restart rtsp_worker</span>).
+                  </div>
+                </>
               ) : null}
               {overridesApply.unknown.length ? (
                 <div className="muted mono" style={{ marginTop: 4 }}>
