@@ -329,6 +329,17 @@ export default function SettingsPage() {
     try {
       const payload = JSON.parse(JSON.stringify(settings || {}));
       const payloadOv = payload?.rtsp_worker?.overrides;
+      const saveNotes: string[] = [];
+
+      if (payloadOv && typeof payloadOv === "object") {
+        const detFps = Number(payloadOv.DET_FPS);
+        const sendFps = Number(payloadOv.SEND_FPS);
+        if (Number.isFinite(detFps) && Number.isFinite(sendFps) && sendFps > detFps) {
+          payloadOv.SEND_FPS = detFps;
+          saveNotes.push(`SEND_FPS ограничен до DET_FPS (${detFps})`);
+        }
+      }
+
       if (payloadOv && typeof payloadOv === "object" && rtspCaps) {
         const allowed = new Set<string>([
           ...((rtspCaps.hot_apply || []).map((x) => String(x))),
@@ -357,10 +368,11 @@ export default function SettingsPage() {
         if (applied.length) parts.push(`hot=${applied.length}`);
         if (queued.length) parts.push(`restart=${queued.length}`);
         if (unknown.length) parts.push(`unknown=${unknown.length}`);
-        setInfo(`Сохранено в settings.json${parts.length ? ` · overrides: ${parts.join(', ')}` : ""}`);
+        const suffix = saveNotes.length ? ` · ${saveNotes.join("; ")}` : "";
+        setInfo(`Сохранено в settings.json${parts.length ? ` · overrides: ${parts.join(', ')}` : ""}${suffix}`);
       } else {
         setOverridesApply(null);
-        setInfo("Сохранено в settings.json");
+        setInfo(`Сохранено в settings.json${saveNotes.length ? ` · ${saveNotes.join("; ")}` : ""}`);
       }
     } catch (e: any) {
       setErr(e?.message || String(e));
@@ -540,9 +552,14 @@ export default function SettingsPage() {
                 <span className="badge badge-red">unknown: {overridesApply.unknown.length}</span>
               </div>
               {overridesApply.queued_restart.length ? (
-                <div className="muted mono" style={{ marginTop: 4 }}>
-                  restart-only: {overridesApply.queued_restart.join(", ")}
-                </div>
+                <>
+                  <div className="muted mono" style={{ marginTop: 4 }}>
+                    restart-only: {overridesApply.queued_restart.join(", ")}
+                  </div>
+                  <div className="muted" style={{ marginTop: 4 }}>
+                    Для применения restart-only параметров перезапусти сервис <span className="mono">rtsp_worker</span> (например: <span className="mono">docker compose restart rtsp_worker</span>).
+                  </div>
+                </>
               ) : null}
               {overridesApply.unknown.length ? (
                 <div className="muted mono" style={{ marginTop: 4 }}>
@@ -609,8 +626,33 @@ export default function SettingsPage() {
                 <div className="cardHead"><div className="cardTitle">RTSP worker / ключевые параметры</div></div>
                 <div className="cardBody">
                   <SliderRow label="READ_FPS" value={Number(ov.READ_FPS ?? 15)} min={1} max={30} step={1} onChange={(v) => patch("rtsp_worker.overrides.READ_FPS", v)} />
-                  <SliderRow label="DET_FPS" value={Number(ov.DET_FPS ?? 2)} min={1} max={15} step={0.5} onChange={(v) => patch("rtsp_worker.overrides.DET_FPS", v)} />
-                  <SliderRow label="SEND_FPS" value={Number(ov.SEND_FPS ?? 2.5)} min={0.5} max={15} step={0.5} onChange={(v) => patch("rtsp_worker.overrides.SEND_FPS", v)} />
+                  <SliderRow
+                    label="DET_FPS"
+                    value={Number(ov.DET_FPS ?? 2)}
+                    min={1}
+                    max={15}
+                    step={0.5}
+                    onChange={(v) => {
+                      patch("rtsp_worker.overrides.DET_FPS", v);
+                      const sendNow = Number(ov.SEND_FPS ?? 0);
+                      if (Number.isFinite(sendNow) && sendNow > Number(v)) {
+                        patch("rtsp_worker.overrides.SEND_FPS", Number(v));
+                      }
+                    }}
+                  />
+                  <SliderRow
+                    label="SEND_FPS"
+                    hint="Не может быть выше DET_FPS"
+                    value={Number(ov.SEND_FPS ?? 2.5)}
+                    min={0.5}
+                    max={15}
+                    step={0.5}
+                    onChange={(v) => {
+                      const detNow = Number(ov.DET_FPS ?? 2);
+                      const next = Number.isFinite(detNow) ? Math.min(Number(v), detNow) : Number(v);
+                      patch("rtsp_worker.overrides.SEND_FPS", next);
+                    }}
+                  />
                   <SliderRow label="Порог детекции (DET_CONF)" value={Number(ov.DET_CONF ?? 0.3)} min={0.05} max={0.95} step={0.01} onChange={(v) => patch("rtsp_worker.overrides.DET_CONF", v)} />
                   <ToggleRow label="Включить авто-режим день/ночь (AUTO_MODE)" checked={Number(ov.AUTO_MODE ?? 0) !== 0} onChange={(v) => patch("rtsp_worker.overrides.AUTO_MODE", v ? 1 : 0)} />
                   <ToggleRow label="Tracking" checked={Number(ov.TRACK_ENABLE ?? 1) !== 0} onChange={(v) => patch("rtsp_worker.overrides.TRACK_ENABLE", v ? 1 : 0)} />
