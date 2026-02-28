@@ -1294,17 +1294,15 @@ def main() -> None:
                 want_send = bool(track_new)
                 send_reason = "new_track" if want_send else "same_track"
             elif EVENT_MODE in ("on_plate_change", "on_plate_confirmed"):
-                if STAB_MODE in ("track", "hybrid") and track_new:
+                # Для plate-based режимов опираемся на plate-state, а не на track_new.
+                # Иначе при нестабильном tracker можно спамить "first_plate/track_new" на каждом кадре.
+                last = events.last_seen_plate
+                if not last:
                     want_send = True
-                    send_reason = "track_new"
+                    send_reason = "first_plate"
                 else:
-                    last = events.last_seen_plate
-                    if not last:
-                        want_send = True
-                        send_reason = "first_plate"
-                    else:
-                        want_send = bool(events.can_send_plate(now, last))
-                        send_reason = "plate_resend_ready" if want_send else "plate_resend_cooldown"
+                    want_send = bool(events.can_send_plate(now, last))
+                    send_reason = "plate_resend_ready" if want_send else "plate_resend_cooldown"
 
         if want_send and not events.can_send_global(now):
             want_send = False
