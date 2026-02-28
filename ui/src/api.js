@@ -62,11 +62,26 @@ export async function apiPost(path, body) {
 // ====== API methods ======
 
 // Events (v1)
-export function getEvents(limit = 30, opts = {}) {
+export function getEvents(limitOrOpts = 30, maybeOpts = {}) {
+  // backward compatible signatures:
+  //   getEvents(30, { include_debug: true })
+  //   getEvents({ limit: 30, include_debug: true, after_ts: ... })
+  let limit = 30;
+  let opts = {};
+
+  if (typeof limitOrOpts === "object" && limitOrOpts !== null) {
+    opts = limitOrOpts;
+    limit = Number(limitOrOpts.limit ?? 30);
+  } else {
+    limit = Number(limitOrOpts ?? 30);
+    opts = maybeOpts || {};
+  }
+
+  const safeLimit = Number.isFinite(limit) ? Math.max(1, Math.floor(limit)) : 30;
   const afterTs =
     opts.after_ts != null ? `&after_ts=${encodeURIComponent(String(opts.after_ts))}` : "";
   const inc = opts.include_debug ? "&include_debug=1" : "";
-  return apiGet(`${API_V1}/events?limit=${encodeURIComponent(String(limit))}${afterTs}${inc}`);
+  return apiGet(`${API_V1}/events?limit=${encodeURIComponent(String(safeLimit))}${afterTs}${inc}`);
 }
 
 export function eventsStreamUrl(opts = {}) {
