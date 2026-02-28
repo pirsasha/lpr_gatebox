@@ -1416,8 +1416,10 @@ def main() -> None:
             if lsp != "-":
                 sent_plate_hits = len([t for t in events.plate_hits.get(lsp, []) if (now - t) <= float(events.plate_confirm_window_sec)])
             trk_state = int(track.track_id) if track.box is not None else 0
+            hits_keys = len(events.plate_hits)
             print(
-                f"[rtsp_worker] state last_plate={lp} last_sent_plate={lsp} seen={seen_hits} sent={sent_plate_hits} tracker_id={trk_state} total_sent={sent}"
+                f"[rtsp_worker] state last_plate={lp} last_sent_plate={lsp} seen={seen_hits} sent={sent_plate_hits} "
+                f"tracker_id={trk_state} hits_keys={hits_keys} tracker_obj={id(track)} events_obj={id(events)} total_sent={sent}"
             )
             last_state_log_ts = now
 
