@@ -256,6 +256,8 @@ TRACK_ENABLE = env_bool("TRACK_ENABLE", True)
 TRACK_HOLD_SEC = env_float("TRACK_HOLD_SEC", 1.6)
 TRACK_ALPHA = env_float("TRACK_ALPHA", 0.75)
 TRACK_IOU_MIN = env_float("TRACK_IOU_MIN", 0.18)
+# fallback for weak IoU: allow same-track if bbox center shift is small
+TRACK_CENTER_SHIFT_MAX = env_float("TRACK_CENTER_SHIFT_MAX", 0.55)
 
 # Stabilization strategy
 STAB_MODE = env_str("STAB_MODE", "track").strip().lower()
@@ -918,7 +920,22 @@ def main() -> None:
                 conf=best_roi.conf,
             )
             if TRACK_ENABLE and track.box is not None and (now - track.last_seen_ts) <= TRACK_HOLD_SEC:
-                if iou(track.box, cur_full) >= TRACK_IOU_MIN:
+                cur_iou = iou(track.box, cur_full)
+                same_track = cur_iou >= TRACK_IOU_MIN
+                if not same_track:
+                    # fallback: иногда IoU проседает из-за дрожания bbox, но объект тот же.
+                    prev_cx = 0.5 * (float(track.box.x1) + float(track.box.x2))
+                    prev_cy = 0.5 * (float(track.box.y1) + float(track.box.y2))
+                    cur_cx = 0.5 * (float(cur_full.x1) + float(cur_full.x2))
+                    cur_cy = 0.5 * (float(cur_full.y1) + float(cur_full.y2))
+                    prev_w = max(1.0, float(track.box.x2 - track.box.x1))
+                    prev_h = max(1.0, float(track.box.y2 - track.box.y1))
+                    shift_x = abs(cur_cx - prev_cx) / prev_w
+                    shift_y = abs(cur_cy - prev_cy) / prev_h
+                    if max(shift_x, shift_y) <= float(TRACK_CENTER_SHIFT_MAX):
+                        same_track = True
+
+                if same_track:
                     track.box = smooth_box(track.box, cur_full, TRACK_ALPHA)
                     track.last_seen_ts = now
                     best_full = track.box
