@@ -540,9 +540,14 @@ export default function SettingsPage() {
                 <span className="badge badge-red">unknown: {overridesApply.unknown.length}</span>
               </div>
               {overridesApply.queued_restart.length ? (
-                <div className="muted mono" style={{ marginTop: 4 }}>
-                  restart-only: {overridesApply.queued_restart.join(", ")}
-                </div>
+                <>
+                  <div className="muted mono" style={{ marginTop: 4 }}>
+                    restart-only: {overridesApply.queued_restart.join(", ")}
+                  </div>
+                  <div className="muted" style={{ marginTop: 4 }}>
+                    Для применения restart-only параметров перезапусти сервис <span className="mono">rtsp_worker</span> (например: <span className="mono">docker compose restart rtsp_worker</span>).
+                  </div>
+                </>
               ) : null}
               {overridesApply.unknown.length ? (
                 <div className="muted mono" style={{ marginTop: 4 }}>
