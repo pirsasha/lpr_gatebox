@@ -309,7 +309,8 @@ def _fuzzy_pick_from_whitelist(plate_norm: str, whitelist: set[str], max_dist: i
 @dataclass
 class GateDecider:
     min_conf: float = 0.80
-    confirm_n: int = 2
+    # Gatebox больше не подтверждает повторно: подтверждение делается в rtsp_worker.
+    confirm_n: int = 1
     window_sec: float = 2.0
     cooldown_sec: float = 15.0
 
@@ -325,6 +326,8 @@ class GateDecider:
 
     _hits: Dict[str, List[float]] = field(default_factory=dict)
     _last_open_ts: float = 0.0
+    _last_stable_plate: str = ""
+    _last_stable_ts: float = 0.0
 
     def __post_init__(self) -> None:
         self.reload_whitelist()
@@ -364,6 +367,27 @@ class GateDecider:
         w = float(self.window_sec)
         arr = [t for t in arr if ts - t <= w]
         self._hits[plate_norm] = arr
+
+    def _sticky_prefix_plate(self, plate_norm: str, now: float) -> str:
+        """Возвращает стабильный plate, если текущий OCR — его укороченный префикс без региона."""
+        cur = str(plate_norm or "")
+        if len(cur) != 6:
+            return ""
+
+        stable = str(self._last_stable_plate or "")
+        if len(stable) != 9:
+            return ""
+        if not stable.startswith(cur):
+            return ""
+
+        if (now - float(self._last_stable_ts or 0.0)) > float(self.window_sec):
+            return ""
+
+        # Доп. защита: есть ли живые хиты по полной версии в текущем окне.
+        arr = [t for t in self._hits.get(stable, []) if now - t <= float(self.window_sec)]
+        if not arr:
+            return ""
+        return stable
 
     def decide(self, plate_norm: str, conf: float) -> Dict[str, Any]:
         """
@@ -406,6 +430,22 @@ class GateDecider:
                 fuzzy_dist = dist
 
         if not valid:
+            sticky = self._sticky_prefix_plate(plate_norm, now)
+            if sticky:
+                sticky_hits = len([t for t in self._hits.get(sticky, []) if now - t <= hits_window_sec])
+                return {
+                    "plate": sticky,
+                    "valid": True,
+                    "allowed": self._in_whitelist(sticky),
+                    "ok": False,
+                    "reason": "invalid_format_or_region",
+                    "stabilized": True,
+                    "stab_reason": "confirmed",
+                    "hits": sticky_hits,
+                    "hits_window_sec": hits_window_sec,
+                    "fuzzy_used": fuzzy_used,
+                    "fuzzy_dist": fuzzy_dist,
+                }
             return {
                 "plate": plate_norm,
                 "valid": False,
@@ -472,6 +512,8 @@ class GateDecider:
             }
 
         if not self._cooldown_ok(now):
+            self._last_stable_plate = plate_norm
+            self._last_stable_ts = now
             return {
                 "plate": plate_norm,
                 "valid": True,
@@ -487,6 +529,8 @@ class GateDecider:
             }
 
         self._last_open_ts = now
+        self._last_stable_plate = plate_norm
+        self._last_stable_ts = now
         return {
             "plate": plate_norm,
             "valid": True,

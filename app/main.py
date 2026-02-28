@@ -101,7 +101,7 @@ ENV_MQTT_TOPIC = os.environ.get("MQTT_TOPIC", "gate/open")
 
 # Gate defaults from env
 ENV_MIN_CONF = float(os.environ.get("MIN_CONF", "0.80"))
-ENV_CONFIRM_N = int(os.environ.get("CONFIRM_N", "2"))
+ENV_CONFIRM_N = 1  # confirm в gatebox фиксирован: стабилизация выполняется в rtsp_worker
 # CHG v0.2.9: при низком FPS воркера (0.5-1.0) окно 2 секунды легко превращается в "вечное ожидание".
 # По умолчанию расширяем окно до 6 секунд (можно вернуть 2.0, если RTSP_FPS>=2).
 ENV_CONFIRM_WINDOW_SEC = float(os.environ.get("CONFIRM_WINDOW_SEC", "6.0"))
@@ -109,7 +109,7 @@ ENV_COOLDOWN_SEC = float(os.environ.get("COOLDOWN_SEC", "15.0"))
 ENV_WHITELIST_PATH = os.environ.get("WHITELIST_PATH", "/config/whitelist.json")
 
 ENV_REGION_CHECK = os.environ.get("REGION_CHECK", "1").strip().lower() not in ("0", "false", "no", "off", "")
-ENV_REGION_STAB = os.environ.get("REGION_STAB", "1").strip().lower() not in ("0", "false", "no", "off", "")
+ENV_REGION_STAB = False  # legacy region stabilization отключена (single source: rtsp_worker)
 ENV_REGION_STAB_WINDOW_SEC = float(os.environ.get("REGION_STAB_WINDOW_SEC", "2.5"))
 ENV_REGION_STAB_MIN_HITS = int(os.environ.get("REGION_STAB_MIN_HITS", "3"))
 ENV_REGION_STAB_MIN_RATIO = float(os.environ.get("REGION_STAB_MIN_RATIO", "0.60"))
@@ -386,7 +386,7 @@ def apply_settings(settings: Dict[str, Any]) -> Dict[str, Any]:
 
     # --- GATE (cfg -> env -> default) ---
     decider.min_conf = get_float(cfg, "gate.min_conf", "MIN_CONF", 0.80)
-    decider.confirm_n = get_int(cfg, "gate.confirm_n", "CONFIRM_N", 2)
+    decider.confirm_n = 1
     decider.window_sec = get_float(cfg, "gate.confirm_window_sec", "CONFIRM_WINDOW_SEC", 6.0)
     decider.cooldown_sec = get_float(cfg, "gate.cooldown_sec", "COOLDOWN_SEC", 15.0)
 
@@ -398,7 +398,7 @@ def apply_settings(settings: Dict[str, Any]) -> Dict[str, Any]:
     if hasattr(decider, "region_check"):
         decider.region_check = get_bool(cfg, "gate.region_check", "REGION_CHECK", True)
     if hasattr(decider, "region_stab"):
-        decider.region_stab = get_bool(cfg, "gate.region_stab", "REGION_STAB", True)
+        decider.region_stab = False
     if hasattr(decider, "region_stab_window_sec"):
         decider.region_stab_window_sec = get_float(cfg, "gate.region_stab_window_sec", "REGION_STAB_WINDOW_SEC", 2.5)
     if hasattr(decider, "region_stab_min_hits"):

@@ -238,6 +238,8 @@ PLATE_PAD_SMALL = env_float("PLATE_PAD_SMALL", 0.12)
 PLATE_PAD_SMALL_W = env_int("PLATE_PAD_SMALL_W", 260)
 PLATE_PAD_SMALL_H = env_int("PLATE_PAD_SMALL_H", 85)
 PLATE_PAD_MAX = env_float("PLATE_PAD_MAX", 0.16)
+# минимальный асимметричный запас справа, чтобы реже отрезать регион
+PLATE_PAD_RIGHT_EXTRA = env_float("PLATE_PAD_RIGHT_EXTRA", 0.04)
 
 MIN_PLATE_W = env_int("MIN_PLATE_W", 80)
 MIN_PLATE_H = env_int("MIN_PLATE_H", 20)
@@ -267,6 +269,7 @@ BEST_CROP_MAX_SEND = env_int("BEST_CROP_MAX_SEND", 1)
 
 # Decision log rate-limit
 DECISION_LOG_EVERY_SEC = env_float("DECISION_LOG_EVERY_SEC", 2.0)
+STATE_LOG_EVERY_SEC = env_float("STATE_LOG_EVERY_SEC", 5.0)
 
 # Event mode
 EVENT_MODE = env_str("EVENT_MODE", "on_plate_change").lower()
@@ -380,7 +383,8 @@ def choose_plate_pad(bbox_w: int, bbox_h: int) -> Tuple[float, str]:
 
 
 def _plate_norm(plate: str) -> str:
-    return re.sub(r"[^A-Z0-9]", "", str(plate or "").upper())
+    # Сохраняем и латиницу, и кириллицу (иначе "У616НН761" превращается в "616761").
+    return re.sub(r"[^0-9A-ZА-ЯЁ]", "", str(plate or "").upper())
 
 
 def _sharpness_score(img: Optional[np.ndarray]) -> float:
@@ -660,6 +664,7 @@ def main() -> None:
         global_send_min_interval_sec=GLOBAL_SEND_MIN_INTERVAL_SEC,
         plate_confirm_k=PLATE_CONFIRM_K,
     )
+    print(f"[rtsp_worker] state_init tracker_obj={id(track)} events_obj={id(events)}")
 
     det_interval = 1.0 / max(0.1, float(DET_FPS))
     send_interval = 1.0 / max(0.1, float(SEND_FPS))
@@ -699,6 +704,7 @@ def main() -> None:
     runtime_overrides_last: dict = {}
     last_unsane_dump_ts = 0.0
     last_decision_log_ts = 0.0
+    last_state_log_ts = 0.0
     last_cand_dbg_ts_mono = 0.0
     last_filter_thr_log_ts_mono = 0.0
     last_sanity_summary_ts_mono = 0.0
@@ -1096,6 +1102,10 @@ def main() -> None:
             last_bbox_wh = bbox_wh_tick
 
             ex1, ey1, ex2, ey2 = expand_box(best_full.x1, best_full.y1, best_full.x2, best_full.y2, pad_used_tick, w, h)
+            if PLATE_PAD_RIGHT_EXTRA > 0:
+                extra_right = int(round(float(best_full.x2 - best_full.x1) * float(PLATE_PAD_RIGHT_EXTRA)))
+                if extra_right > 0:
+                    ex2 = min(int(w), int(ex2 + extra_right))
             crop = frame[ey1:ey2, ex1:ex2]
             if crop.size > 0:
                 crop_dbg = crop
@@ -1284,17 +1294,15 @@ def main() -> None:
                 want_send = bool(track_new)
                 send_reason = "new_track" if want_send else "same_track"
             elif EVENT_MODE in ("on_plate_change", "on_plate_confirmed"):
-                if STAB_MODE in ("track", "hybrid") and track_new:
+                # Для plate-based режимов опираемся на plate-state, а не на track_new.
+                # Иначе при нестабильном tracker можно спамить "first_plate/track_new" на каждом кадре.
+                last = events.last_seen_plate
+                if not last:
                     want_send = True
-                    send_reason = "track_new"
+                    send_reason = "first_plate"
                 else:
-                    last = events.last_seen_plate
-                    if not last:
-                        want_send = True
-                        send_reason = "first_plate"
-                    else:
-                        want_send = bool(events.can_send_plate(now, last))
-                        send_reason = "plate_resend_ready" if want_send else "plate_resend_cooldown"
+                    want_send = bool(events.can_send_plate(now, last))
+                    send_reason = "plate_resend_ready" if want_send else "plate_resend_cooldown"
 
         if want_send and not events.can_send_global(now):
             want_send = False
@@ -1373,28 +1381,47 @@ def main() -> None:
                 valid = bool(resp.get("valid", False))
 
             plate_norm = _plate_norm(plate)
-            if plate and valid:
+            if plate_norm:
+                # state должен жить между кадрами даже при временно invalid ответах,
+                # иначе EVENT_MODE=on_plate_change будет видеть "first_plate" на каждом цикле
                 events.mark_seen(now, plate_norm)
 
             if EVENT_MODE == "on_plate_change":
-                if plate and valid:
+                if plate_norm:
                     if plate_norm != events.last_sent_plate:
                         events.mark_sent(now, plate_norm)
                     else:
                         if events.can_send_plate(now, plate_norm):
                             events.mark_sent(now, plate_norm)
             elif EVENT_MODE == "on_plate_confirmed":
-                if plate and valid:
+                if plate_norm:
                     hits = events.note_plate(now, plate_norm)
                     if hits >= PLATE_CONFIRM_K and events.can_send_plate(now, plate_norm):
                         events.mark_sent(now, plate_norm)
 
-            if STAB_MODE in ("plate", "hybrid") and plate and valid:
+            if STAB_MODE in ("plate", "hybrid") and plate_norm:
                 _ = events.note_plate(now, plate_norm)
 
         if DECISION_LOG_EVERY_SEC > 0 and (now - last_decision_log_ts) >= DECISION_LOG_EVERY_SEC:
             print(f"[rtsp_worker] decision send={int(want_send)} reason={send_reason} mode={EVENT_MODE}/{STAB_MODE} track_new={int(track_new)} best_score={best_crop_score:.4f}")
             last_decision_log_ts = now
+
+        if STATE_LOG_EVERY_SEC > 0 and (now - last_state_log_ts) >= STATE_LOG_EVERY_SEC:
+            lp = events.last_seen_plate or "-"
+            lsp = events.last_sent_plate or "-"
+            seen_hits = 0
+            if lp != "-":
+                seen_hits = len([t for t in events.plate_hits.get(lp, []) if (now - t) <= float(events.plate_confirm_window_sec)])
+            sent_plate_hits = 0
+            if lsp != "-":
+                sent_plate_hits = len([t for t in events.plate_hits.get(lsp, []) if (now - t) <= float(events.plate_confirm_window_sec)])
+            trk_state = int(track.track_id) if track.box is not None else 0
+            hits_keys = len(events.plate_hits)
+            print(
+                f"[rtsp_worker] state last_plate={lp} last_sent_plate={lsp} seen={seen_hits} sent={sent_plate_hits} "
+                f"tracker_id={trk_state} hits_keys={hits_keys} tracker_obj={id(track)} events_obj={id(events)} total_sent={sent}"
+            )
+            last_state_log_ts = now
 
         # heartbeat
         if HB_EVERY_SEC > 0 and (now - hb_last) >= HB_EVERY_SEC:
