@@ -285,12 +285,13 @@ body{
 .frameOverlay{ position:absolute; inset:0; width:100%; height:100%; }
 
 .dashboardPreviewWrap{
-  aspect-ratio: 16 / 9;
+  /* keep same geometry as Camera page: no forced aspect crop */
 }
 .dashboardPreviewWrap .frameImg{
+  /* self-check: object-fit: cover crops image and shifts bbox overlay relative to visible frame */
   width: 100%;
-  height: 100%;
-  object-fit: cover;
+  height: auto;
+  object-fit: contain;
 }
 
 .roiPoly{ fill: rgba(90,140,255,.14); stroke: rgba(90,140,255,.9); stroke-width:0.9; }
