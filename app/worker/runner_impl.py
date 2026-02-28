@@ -383,7 +383,8 @@ def choose_plate_pad(bbox_w: int, bbox_h: int) -> Tuple[float, str]:
 
 
 def _plate_norm(plate: str) -> str:
-    return re.sub(r"[^A-Z0-9]", "", str(plate or "").upper())
+    # Сохраняем и латиницу, и кириллицу (иначе "У616НН761" превращается в "616761").
+    return re.sub(r"[^0-9A-ZА-ЯЁ]", "", str(plate or "").upper())
 
 
 def _sharpness_score(img: Optional[np.ndarray]) -> float:
@@ -663,6 +664,7 @@ def main() -> None:
         global_send_min_interval_sec=GLOBAL_SEND_MIN_INTERVAL_SEC,
         plate_confirm_k=PLATE_CONFIRM_K,
     )
+    print(f"[rtsp_worker] state_init tracker_obj={id(track)} events_obj={id(events)}")
 
     det_interval = 1.0 / max(0.1, float(DET_FPS))
     send_interval = 1.0 / max(0.1, float(SEND_FPS))
@@ -1415,8 +1417,9 @@ def main() -> None:
             sent_plate_hits = 0
             if lsp != "-":
                 sent_plate_hits = len([t for t in events.plate_hits.get(lsp, []) if (now - t) <= float(events.plate_confirm_window_sec)])
+            trk_state = int(track.track_id) if track.box is not None else 0
             print(
-                f"[rtsp_worker] state last_plate={lp} last_sent_plate={lsp} seen={seen_hits} sent={sent_plate_hits} total_sent={sent}"
+                f"[rtsp_worker] state last_plate={lp} last_sent_plate={lsp} seen={seen_hits} sent={sent_plate_hits} tracker_id={trk_state} total_sent={sent}"
             )
             last_state_log_ts = now
 
